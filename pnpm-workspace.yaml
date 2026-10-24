@@ -4,4 +4,8 @@ packages:
   - libs/sample/*
 onlyBuiltDependencies:
   - esbuild
+  - nx
+allowBuilds:
+  esbuild: true
+  nx: true
 saveExact: true
