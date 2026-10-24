@@ -2,7 +2,23 @@
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
   "ignorePatterns": ["repos/**", "node_modules/**", "dist/**", "coverage/**"],
-  "jsPlugins": ["./tools/oxlint/syntax-bans.js"],
+  "jsPlugins": ["./tools/oxlint/syntax-bans.js", "@nx/oxlint/boundaries-plugin"],
+  "rules": {
+    "@nx/enforce-module-boundaries": [
+      "error",
+      {
+        "enforceBuildableLibDependency": true,
+        "depConstraints": [
+          { "sourceTag": "type:contract", "onlyDependOnLibsWithTags": ["type:contract"] },
+          { "sourceTag": "type:domain", "onlyDependOnLibsWithTags": ["type:contract", "type:domain"] },
+          { "sourceTag": "type:service", "onlyDependOnLibsWithTags": ["type:contract", "type:domain", "type:service"] },
+          { "sourceTag": "type:infra", "onlyDependOnLibsWithTags": ["type:contract", "type:domain", "type:service", "type:infra"] },
+          { "sourceTag": "type:app", "onlyDependOnLibsWithTags": ["type:contract", "type:domain", "type:service", "type:infra", "type:app"] },
+          { "sourceTag": "*", "onlyDependOnLibsWithTags": ["*"] }
+        ]
+      }
+    ]
+  },
   "overrides": [
     {
       "files": ["libs/**/src/**/*.ts", "apps/**/src/**/*.ts"],

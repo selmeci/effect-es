@@ -2,7 +2,15 @@
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
   "defaultBase": "main",
   "ignore": ["repos/**", "docs/**", "agent-patterns/**", "adapters/**"],
-  "plugins": ["@nx/js"],
+  "plugins": [
+    "@nx/js",
+    {
+      "plugin": "@nx/oxlint",
+      "options": {
+        "targetName": "oxlint"
+      }
+    }
+  ],
   "namedInputs": {
     "sharedGlobals": ["{workspaceRoot}/tsconfig.base.json", "{workspaceRoot}/.oxlintrc.json"],
     "default": ["{projectRoot}/**/*", "sharedGlobals"],
