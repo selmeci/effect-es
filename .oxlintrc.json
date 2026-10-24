@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
+  "ignorePatterns": ["repos/**", "node_modules/**", "dist/**", "coverage/**"],
+  "jsPlugins": ["./tools/oxlint/syntax-bans.js"],
+  "overrides": [
+    {
+      "files": ["libs/**/src/**/*.ts", "apps/**/src/**/*.ts"],
+      "rules": {
+        "harness/syntax-bans": "error",
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "drizzle-orm",
+                "message": "drizzle-orm is infra-only — import it only in type:infra libraries; repositories decode rows into contract Schemas (mvp.md, Application stack). Escape hatch: an oxlint-disable comment, foreign boundaries only."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["**/infra/src/**/*.ts", "**/infra/test/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    }
+  ]
+}
