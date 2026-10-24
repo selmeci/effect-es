@@ -1,0 +1,23 @@
+{
+  "name": "harness-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "nx": {
+    "tags": ["type:app"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint .",
+    "test": "vitest run",
+    "verify": "pnpm run typecheck && pnpm run lint && pnpm run test",
+    "start": "node src/index.ts"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0",
+    "vitest": "5.0.3"
+  }
+}

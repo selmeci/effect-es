@@ -1,0 +1,27 @@
+{
+  "name": "harness-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/server.ts"
+  },
+  "nx": {
+    "tags": ["type:app"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint .",
+    "test": "vitest run",
+    "verify": "pnpm run typecheck && pnpm run lint && pnpm run test",
+    "start": "node src/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0",
+    "vitest": "5.0.3"
+  }
+}
