@@ -17,7 +17,6 @@
     "plugins": [
       {
         "name": "@effect/language-service",
-        "diagnostics": false,
         "diagnosticSeverity": { "floatingEffect": "error" },
         "ignoreEffectSuggestionsInTscExitCode": true,
         "ignoreEffectWarningsInTscExitCode": false,
