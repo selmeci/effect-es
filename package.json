@@ -1,14 +1,10 @@
 {
   "name": "effect-ts-harness",
-  "version": "1.0.0",
-  "description": "",
-  "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc"
-  },
-  "dependencies": {},
-  "devDependencies": {
-    "typescript": "^6.0.3"
-  },
-  "private": true
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.9.1",
+  "engines": {
+    "node": ">=24.0.0"
+  }
 }

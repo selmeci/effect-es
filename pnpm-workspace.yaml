@@ -1,0 +1,7 @@
+packages:
+  - apps/*
+  - libs/harness/*
+  - libs/sample/*
+onlyBuiltDependencies:
+  - esbuild
+saveExact: true
