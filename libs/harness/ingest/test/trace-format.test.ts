@@ -1,23 +1,39 @@
 import { describe, expect, it } from "vitest"
 import { Schema } from "effect"
-import { makeTraceHeader, TraceHeader, TRACE_FORMAT_VERSION } from "../src/trace-format.js"
+import {
+  ExercisesSpanEdge,
+  makeTraceHeader,
+  TracedCallEdge,
+  TraceHeader,
+  TRACE_FORMAT_VERSION
+} from "../src/trace-format.js"
 
-describe("trace format", () => {
-  it("emits the v1 effect-span header with sampled:false", () => {
-    expect(TRACE_FORMAT_VERSION).toBe(1)
-    const header = makeTraceHeader("/repo")
-    expect(header).toEqual({
-      kind: "header",
-      version: 1,
-      language: "javascript",
-      repo_root: "/repo",
-      tracer: "effect-span",
-      sampled: false
-    })
+describe("trace format (v2 Omnigraph & root TestSpan)", () => {
+  it("emits the effect-span header with sampled:false", () => {
+    expect(TRACE_FORMAT_VERSION).toBe(2)
+    const rawHeader: unknown = makeTraceHeader("/repo")
+    const header = Schema.decodeUnknownSync(TraceHeader)(rawHeader)
+    expect(header.sampled).toBe(false)
+    expect(header.tracer).toBe("effect-span")
   })
 
-  it("decodes a produced header against its Schema", () => {
-    const decoded = Schema.decodeUnknownSync(TraceHeader)(makeTraceHeader("/repo"))
-    expect(decoded.tracer).toBe("effect-span")
+  it("validates TracedCallEdge and ExercisesSpanEdge records for Omnigraph sync", () => {
+    const rawCall: unknown = {
+      callerQualname: "libs/sample/domain/src/index.ts#greet",
+      calleeQualname: "libs/sample/infra/src/index.ts#PhotoRepo.insert",
+      callCount: 1,
+      receiverLayer: "libs/sample/infra/src/index.ts#PhotoRepoLive"
+    }
+    const call = Schema.decodeUnknownSync(TracedCallEdge)(rawCall)
+    expect(call.callCount).toBe(1)
+
+    const rawExercise: unknown = {
+      testId: "libs/sample/domain/test/index.test.ts::greet greets by name",
+      calleeQualname: "libs/sample/domain/src/index.ts#greet",
+      callCount: 1,
+      receiverLayer: null
+    }
+    const exercise = Schema.decodeUnknownSync(ExercisesSpanEdge)(rawExercise)
+    expect(exercise.testId).toContain("greet")
   })
 })

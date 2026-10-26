@@ -1,0 +1,295 @@
+import { describe, expect, it } from "vitest"
+import {
+  buildHarnessGraph,
+  checkEffectGraph,
+  extractTypeAwareGraphFromSource
+} from "../src/index.js"
+
+describe("effect-graph:check policy rules", () => {
+  it("fails when a type:domain Effect.fn requires an infra ServiceTag or cloud binding in R", () => {
+    const graph = buildHarnessGraph({
+      fns: [
+        {
+          qualname: "libs/sample/domain/src/index.ts#badUseCase",
+          spanName: "Sample.badUseCase",
+          file: "libs/sample/domain/src/index.ts",
+          line: 1,
+          packageTag: "domain",
+          successType: "void",
+          isStub: true
+        }
+      ],
+      services: [
+        {
+          tagId: "Cloudflare.R2.BucketBinding",
+          name: "BucketBinding",
+          packageTag: "infra",
+          file: "libs/sample/infra/src/index.ts"
+        }
+      ],
+      layers: [],
+      errors: [],
+      tests: [],
+      patternDocs: [],
+      requiresService: [
+        {
+          fnQualname: "libs/sample/domain/src/index.ts#badUseCase",
+          tagId: "Cloudflare.R2.BucketBinding"
+        }
+      ],
+      failsWith: [],
+      providesService: [],
+      layerRequires: [],
+      tracedCalls: [],
+      exercisesSpans: []
+    })
+
+    const result = checkEffectGraph(graph)
+    expect(result.ok).toBe(false)
+    expect(result.violations[0]?.rule).toBe("domain-requires-infra")
+    expect(result.violations[0]?.path).toEqual([
+      "libs/sample/domain/src/index.ts#badUseCase",
+      "Cloudflare.R2.BucketBinding"
+    ])
+  })
+
+  it("fails when ServiceLayers form a dependency cycle via Graph.findCycle", () => {
+    const graph = buildHarnessGraph({
+      fns: [],
+      services: [
+        { tagId: "SvcA", name: "SvcA", packageTag: "service", file: "a.ts" },
+        { tagId: "SvcB", name: "SvcB", packageTag: "service", file: "b.ts" }
+      ],
+      layers: [
+        { qualname: "LayerA", layerKind: "live", packageTag: "infra", file: "a.ts" },
+        { qualname: "LayerB", layerKind: "live", packageTag: "infra", file: "b.ts" }
+      ],
+      errors: [],
+      tests: [],
+      patternDocs: [],
+      requiresService: [],
+      failsWith: [],
+      providesService: [
+        { layerQualname: "LayerA", tagId: "SvcA" },
+        { layerQualname: "LayerB", tagId: "SvcB" }
+      ],
+      layerRequires: [
+        { layerQualname: "LayerA", tagId: "SvcB" },
+        { layerQualname: "LayerB", tagId: "SvcA" }
+      ],
+      tracedCalls: [],
+      exercisesSpans: []
+    })
+
+    const result = checkEffectGraph(graph)
+    expect(result.ok).toBe(false)
+    expect(result.violations.some((v) => v.rule === "layer-cycle")).toBe(true)
+  })
+
+  it("fails when a type:domain Effect.fn requires a cloud binding or provider tagged as service", () => {
+    const graph = buildHarnessGraph({
+      fns: [
+        {
+          qualname: "libs/sample/domain/src/index.ts#orderUseCase",
+          spanName: "Order.checkout",
+          file: "libs/sample/domain/src/index.ts",
+          line: 1,
+          packageTag: "domain",
+          successType: "void",
+          isStub: false
+        }
+      ],
+      services: [
+        {
+          tagId: "Provider<Database>",
+          name: "Provider<Database>",
+          packageTag: "service",
+          file: "libs/sample/service/src/index.ts"
+        }
+      ],
+      layers: [],
+      errors: [],
+      tests: [],
+      patternDocs: [],
+      requiresService: [
+        {
+          fnQualname: "libs/sample/domain/src/index.ts#orderUseCase",
+          tagId: "Provider<Database>"
+        }
+      ],
+      failsWith: [],
+      providesService: [],
+      layerRequires: [],
+      tracedCalls: [],
+      exercisesSpans: []
+    })
+
+    const result = checkEffectGraph(graph)
+    expect(result.ok).toBe(false)
+    expect(result.violations[0]?.rule).toBe("domain-requires-cloud-binding")
+    expect(result.violations[0]?.path).toEqual([
+      "libs/sample/domain/src/index.ts#orderUseCase",
+      "Provider<Database>"
+    ])
+  })
+
+  it("fails when a type:domain decider Effect.fn requires services (impure-decider)", () => {
+    const graph = buildHarnessGraph({
+      fns: [
+        {
+          qualname: "libs/sample/domain/src/index.ts#decide",
+          spanName: "Order.decide",
+          file: "libs/sample/domain/src/index.ts",
+          line: 10,
+          packageTag: "domain",
+          successType: "OrderEvent",
+          isStub: false
+        }
+      ],
+      services: [
+        {
+          tagId: "OrderRepository",
+          name: "OrderRepository",
+          packageTag: "service",
+          file: "libs/sample/service/src/index.ts"
+        }
+      ],
+      layers: [],
+      errors: [],
+      tests: [],
+      patternDocs: [],
+      requiresService: [
+        {
+          fnQualname: "libs/sample/domain/src/index.ts#decide",
+          tagId: "OrderRepository"
+        }
+      ],
+      failsWith: [],
+      providesService: [],
+      layerRequires: [],
+      tracedCalls: [],
+      exercisesSpans: []
+    })
+
+    const result = checkEffectGraph(graph)
+    expect(result.ok).toBe(false)
+    const impureViolation = result.violations.find((v) => v.rule === "impure-decider")
+    expect(impureViolation).toBeDefined()
+    expect(impureViolation?.path).toEqual([
+      "libs/sample/domain/src/index.ts#decide",
+      "OrderRepository"
+    ])
+  })
+
+  it("end-to-end: extracts from source skeleton with forbidden infra dependency and reports violation", () => {
+    const domainSource = `
+import { Effect } from "effect"
+import { stub } from "@harness/gates"
+
+export class R2BucketBinding {
+  static readonly _tag = "ServiceTag"
+}
+
+export const badDomainFn = Effect.fn("BadDomain.run")(() =>
+  stub<void, never, R2BucketBinding>()
+)
+`
+    const infraSource = `
+import { Context } from "effect"
+
+export class R2BucketBinding extends Context.Service<R2BucketBinding, { readonly bucket: string }>()(
+  "Cloudflare.R2.BucketBinding"
+) {}
+`
+
+    const graph = extractTypeAwareGraphFromSource([
+      {
+        filePath: "libs/sample/domain/src/index.ts",
+        content: domainSource,
+        packageTag: "domain"
+      },
+      {
+        filePath: "libs/sample/infra/src/index.ts",
+        content: infraSource,
+        packageTag: "infra"
+      }
+    ])
+
+    const result = checkEffectGraph(graph)
+    expect(result.ok).toBe(false)
+    expect(
+      result.violations.some(
+        (v) => v.rule === "domain-requires-infra" || v.rule === "domain-requires-cloud-binding"
+      )
+    ).toBe(true)
+  })
+
+  it("end-to-end: passes on clean type-aware graph with valid architecture and returns mermaid", () => {
+    const contractSource = `
+import { Data } from "effect"
+
+export class OrderNotFoundError extends Data.TaggedError("OrderNotFoundError")<{
+  readonly orderId: string
+}> {}
+`
+    const serviceSource = `
+import { Context, Effect } from "effect"
+import type { OrderNotFoundError } from "./contract.js"
+
+export class OrderRepo extends Context.Service<OrderRepo, {
+  readonly get: (id: string) => Effect.Effect<string, OrderNotFoundError>
+}>()("OrderRepo") {}
+`
+    const domainSource = `
+import { Effect } from "effect"
+import { OrderRepo } from "./service.js"
+
+export const getOrder = Effect.fn("Order.get")((id: string) =>
+  Effect.gen(function* () {
+    const repo = yield* OrderRepo
+    return yield* repo.get(id)
+  })
+)
+
+export const pureDecider = Effect.fn("Order.decide")((cmd: string) =>
+  Effect.succeed(cmd)
+)
+`
+    const infraSource = `
+import { Layer, Effect } from "effect"
+import { OrderRepo } from "./service.js"
+
+export const OrderRepoLive: Layer.Layer<OrderRepo> = Layer.succeed(OrderRepo, {
+  get: (id: string) => Effect.succeed(id)
+})
+`
+
+    const graph = extractTypeAwareGraphFromSource([
+      {
+        filePath: "libs/sample/contract/src/index.ts",
+        content: contractSource,
+        packageTag: "contract"
+      },
+      {
+        filePath: "libs/sample/service/src/index.ts",
+        content: serviceSource,
+        packageTag: "service"
+      },
+      {
+        filePath: "libs/sample/domain/src/index.ts",
+        content: domainSource,
+        packageTag: "domain"
+      },
+      {
+        filePath: "libs/sample/infra/src/index.ts",
+        content: infraSource,
+        packageTag: "infra"
+      }
+    ])
+
+    const result = checkEffectGraph(graph)
+    expect(result.ok).toBe(true)
+    expect(result.violations).toEqual([])
+    expect(result.mermaid).toContain("flowchart")
+  })
+})

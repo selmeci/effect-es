@@ -4,6 +4,7 @@ coverage/
 .nx/
 .vite/
 .alchemy/
+.harness/
 *.tsbuildinfo
 
 .env
@@ -15,3 +16,4 @@ coverage/
 
 .idea/
 .DS_Store
+.superpowers/

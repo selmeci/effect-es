@@ -4,23 +4,27 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/idiom-router.ts"
+    ".": "./src/index.ts"
   },
   "nx": {
-    "tags": ["type:service"]
+    "tags": [
+      "type:service"
+    ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "oxlint .",
+    "typecheck": "tsc --noEmit && effect-tsgo diagnostics --strict --project tsconfig.json",
+    "lint": "oxlint --deny-warnings .",
     "test": "vitest run",
     "verify": "pnpm run typecheck && pnpm run lint && pnpm run test"
   },
   "dependencies": {
+    "@harness/gates": "workspace:*",
     "effect": "4.0.0",
     "@effect/ai-typesafe": "4.0.0"
   },
   "devDependencies": {
     "@effect/vitest": "4.0.0",
+    "@types/node": "26.6.5",
     "vitest": "5.0.3"
   }
 }

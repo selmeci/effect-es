@@ -7,17 +7,27 @@
     ".": "./src/index.ts"
   },
   "nx": {
-    "tags": ["type:app"]
+    "tags": [
+      "type:app"
+    ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "oxlint .",
+    "typecheck": "tsc --noEmit && effect-tsgo diagnostics --strict --project tsconfig.json",
+    "lint": "oxlint --deny-warnings .",
     "test": "vitest run",
     "verify": "pnpm run typecheck && pnpm run lint && pnpm run test",
-    "start": "node src/index.ts"
+    "start": "node --import ../../tools/node-ts-resolver.mjs src/index.ts"
+  },
+  "dependencies": {
+    "@harness/decision": "workspace:*",
+    "@harness/gates": "workspace:*",
+    "@harness/graph": "workspace:*",
+    "@harness/ingest": "workspace:*",
+    "effect": "4.0.0"
   },
   "devDependencies": {
     "@effect/vitest": "4.0.0",
+    "@types/node": "26.6.5",
     "vitest": "5.0.3"
   }
 }

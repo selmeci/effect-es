@@ -1,4 +1,21 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnosticSeverity": { "floatingEffect": "error" },
+        "ignoreEffectSuggestionsInTscExitCode": true,
+        "ignoreEffectWarningsInTscExitCode": false,
+        "ignoreEffectErrorsInTscExitCode": false,
+        "allowedUnstableApis": [
+          "effect/ai/DecisionModel#DecisionModel",
+          "effect/ai/DecisionModel#decide",
+          "effect/ai/DecisionModel#TypeId"
+        ]
+      }
+    ]
+  },
   "include": ["src", "test"]
 }

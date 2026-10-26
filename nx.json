@@ -20,6 +20,7 @@
     "typecheck": { "cache": true },
     "lint": { "cache": true },
     "test": { "cache": true },
-    "verify": { "cache": true }
+    "verify": { "cache": true },
+    "effect-graph:check": { "cache": true }
   }
 }

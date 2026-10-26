@@ -7,19 +7,28 @@
     ".": "./src/index.ts"
   },
   "nx": {
-    "tags": ["type:domain"]
+    "tags": [
+      "type:domain"
+    ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "nx oxlint",
+    "typecheck": "tsc --noEmit && effect-tsgo diagnostics --strict --project tsconfig.json",
+    "lint": "oxlint --deny-warnings .",
     "test": "vitest run",
+    "test:trace": "HARNESS_TRACE=1 vitest run",
     "verify": "pnpm run typecheck && pnpm run lint && pnpm run test"
   },
   "dependencies": {
+    "@harness/sample-contract": "workspace:*",
+    "@harness/sample-service": "workspace:*",
     "effect": "4.0.0"
   },
   "devDependencies": {
     "@effect/vitest": "4.0.0",
+    "@harness/gates": "workspace:*",
+    "@harness/graph": "workspace:*",
+    "@harness/ingest": "workspace:*",
+    "@types/node": "26.6.5",
     "vitest": "5.0.3"
   }
 }

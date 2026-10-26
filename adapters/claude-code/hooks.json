@@ -1,0 +1,46 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts session"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts guard"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts ingest"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts done"
+          }
+        ]
+      }
+    ]
+  }
+}

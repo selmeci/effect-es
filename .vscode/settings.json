@@ -1,0 +1,13 @@
+{
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "search.exclude": {
+    "repos/**": true,
+    "**/node_modules": true,
+    "dist": true,
+    "coverage": true
+  },
+  "files.watcherExclude": {
+    "repos/**": true
+  },
+  "typescript.preferences.autoImportFileExcludePatterns": ["repos/**"]
+}

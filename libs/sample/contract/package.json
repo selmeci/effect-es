@@ -1,0 +1,29 @@
+{
+  "name": "@harness/sample-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "nx": {
+    "tags": [
+      "type:contract"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit && effect-tsgo diagnostics --strict --project tsconfig.json",
+    "lint": "oxlint --deny-warnings .",
+    "test": "vitest run",
+    "openapi:check": "node --import ../../../tools/node-ts-resolver.mjs scripts/check-openapi.mjs",
+    "verify": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run openapi:check"
+  },
+  "dependencies": {
+    "effect": "4.0.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0",
+    "@types/node": "26.6.5",
+    "vitest": "5.0.3"
+  }
+}

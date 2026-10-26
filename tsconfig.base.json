@@ -17,8 +17,18 @@
     "plugins": [
       {
         "name": "@effect/language-service",
-        "diagnosticSeverity": { "floatingEffect": "error" },
-        "ignoreEffectSuggestionsInTscExitCode": true,
+        "diagnosticSeverity": {
+          "floatingEffect": "error",
+          "lazyEffect": "error",
+          "redundantOrDie": "error",
+          "schemaNumber": "error",
+          "preferTypedSchemaDecoder": "error",
+          "returnEffectInGen": "error",
+          "runEffectInsideEffect": "error",
+          "tryCatchInEffectGen": "error",
+          "unnecessaryEffectGen": "error"
+        },
+        "ignoreEffectSuggestionsInTscExitCode": false,
         "ignoreEffectWarningsInTscExitCode": false,
         "ignoreEffectErrorsInTscExitCode": false
       }

@@ -5,13 +5,17 @@ packages:
 onlyBuiltDependencies:
   - esbuild
   - nx
+  - workerd
 allowBuilds:
   esbuild: true
   nx: true
+  workerd: true
 saveExact: true
 # @nx/oxlint's boundaries plugin loads @typescript-eslint, which reads the TS compiler API at import time.
 # TypeScript 7's package entry is only a version shim, so that chain must resolve TypeScript 5. The root compiler stays 7.0.2.
 overrides:
+  "ts-morph>typescript": "5.9.3"
+  "@ts-morph/common>typescript": "5.9.3"
   "ts-api-utils>typescript": "5.9.3"
   "@typescript-eslint/type-utils>typescript": "5.9.3"
   "@typescript-eslint/utils>typescript": "5.9.3"

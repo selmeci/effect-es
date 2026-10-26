@@ -1,0 +1,69 @@
+node EffectFn {
+  qualname: String @key
+  spanName: String @index
+  packageTag: enum(contract, domain, service, infra, app) @index
+  file: String @index
+  line: I32
+  successType: String
+  isStub: Bool @index
+}
+
+node ServiceTag {
+  tagId: String @key
+  name: String @index
+  packageTag: enum(contract, domain, service, infra, app) @index
+  file: String @index
+}
+
+node ServiceLayer {
+  qualname: String @key
+  layerKind: enum(live, test, emulated, infra) @index
+  packageTag: enum(contract, domain, service, infra, app) @index
+  file: String @index
+}
+
+node TaggedError {
+  errorTag: String @key
+  file: String @index
+}
+
+node VitestCase {
+  testId: String @key
+  testFile: String @index
+  testName: String @index
+  lastTreeHash: String
+}
+
+node PatternDoc {
+  slug: String @key
+  path: String @index
+  summary: String @index
+}
+
+edge RequiresService: EffectFn -> ServiceTag @card(0..) {
+  @unique(@src, @dst)
+}
+
+edge FailsWith: EffectFn -> TaggedError @card(0..) {
+  @unique(@src, @dst)
+}
+
+edge ProvidesService: ServiceLayer -> ServiceTag @card(0..) {
+  @unique(@src, @dst)
+}
+
+edge LayerRequires: ServiceLayer -> ServiceTag @card(0..) {
+  @unique(@src, @dst)
+}
+
+edge TracedCall: EffectFn -> EffectFn @card(0..) {
+  callCount: I64
+  receiverLayer: String?
+  @unique(@src, @dst)
+}
+
+edge ExercisesSpan: VitestCase -> EffectFn @card(0..) {
+  callCount: I64
+  receiverLayer: String?
+  @unique(@src, @dst)
+}

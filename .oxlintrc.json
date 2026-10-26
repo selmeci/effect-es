@@ -4,13 +4,23 @@
   "ignorePatterns": ["repos/**", "node_modules/**", "dist/**", "coverage/**"],
   "jsPlugins": ["./tools/oxlint/syntax-bans.js", "@nx/oxlint/boundaries-plugin"],
   "rules": {
+    "effecttsgo/unstable-api-usage": "off",
+    "effecttsgo/lazy-effect": "error",
+    "effecttsgo/redundant-or-die": "error",
+    "effecttsgo/schema-number": "error",
+    "effecttsgo/prefer-typed-schema-decoder": "error",
+    "effecttsgo/return-effect-in-gen": "error",
+    "effecttsgo/run-effect-inside-effect": "error",
+    "effecttsgo/try-catch-in-effect-gen": "error",
+    "effecttsgo/unnecessary-effect-gen": "error",
     "@nx/enforce-module-boundaries": [
       "error",
       {
         "enforceBuildableLibDependency": true,
         "depConstraints": [
+          { "sourceTag": "scope:web", "onlyDependOnLibsWithTags": ["type:contract"] },
           { "sourceTag": "type:contract", "onlyDependOnLibsWithTags": ["type:contract"] },
-          { "sourceTag": "type:domain", "onlyDependOnLibsWithTags": ["type:contract", "type:domain"] },
+          { "sourceTag": "type:domain", "onlyDependOnLibsWithTags": ["type:contract", "type:domain", "type:service"] },
           { "sourceTag": "type:service", "onlyDependOnLibsWithTags": ["type:contract", "type:domain", "type:service"] },
           { "sourceTag": "type:infra", "onlyDependOnLibsWithTags": ["type:contract", "type:domain", "type:service", "type:infra"] },
           { "sourceTag": "type:app", "onlyDependOnLibsWithTags": ["type:contract", "type:domain", "type:service", "type:infra", "type:app"] },
@@ -27,10 +37,18 @@
         "no-restricted-imports": [
           "error",
           {
-            "paths": [
+            "patterns": [
               {
-                "name": "drizzle-orm",
-                "message": "drizzle-orm is infra-only — import it only in type:infra libraries; repositories decode rows into contract Schemas (mvp.md, Application stack). Escape hatch: an oxlint-disable comment, foreign boundaries only."
+                "group": ["drizzle-orm", "drizzle-orm/*"],
+                "message": "drizzle-orm is infra-only — import it only in type:infra libraries; repositories decode rows into contract Schemas (docs/mvp_v2.md §10)."
+              },
+              {
+                "group": ["alchemy", "alchemy/*"],
+                "message": "alchemy is infra/app-only — resources and bindings may live only in type:infra libraries and apps/sample/alchemy.run.ts (docs/mvp_v2.md §9)."
+              },
+              {
+                "group": ["@effect/sql-*"],
+                "message": "@effect/sql-* drivers are infra-only — import them only in type:infra libraries (docs/mvp_v2.md §10)."
               }
             ]
           }
@@ -38,7 +56,7 @@
       }
     },
     {
-      "files": ["**/infra/src/**/*.ts", "**/infra/test/**/*.ts"],
+      "files": ["**/infra/src/**/*.ts", "**/infra/test/**/*.ts", "apps/sample/**/*.ts"],
       "rules": {
         "no-restricted-imports": "off"
       }

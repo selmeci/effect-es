@@ -1,0 +1,362 @@
+import * as path from "node:path"
+import { fileURLToPath } from "node:url"
+import { describe, expect, it } from "@effect/vitest"
+import { Effect } from "effect"
+import {
+  buildWorkspaceFnIndex,
+  indexEffectFnsInFile,
+  validateUniqueSpanNames
+} from "../src/fn-index.js"
+// @ts-expect-error - JS plugin without ambient typings
+// oxlint-disable-next-line @nx/enforce-module-boundaries
+import syntaxBansPlugin from "../../../../tools/oxlint/syntax-bans.js"
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const repoRoot = path.resolve(__dirname, "../../../..")
+
+describe("Effect.fn syntactic index", () => {
+  it("extracts exported Effect.fn declarations and detects stub() bodies", () => {
+    const src = `
+      import { Effect } from "effect"
+      import { stub } from "@harness/gates"
+      export const greet = Effect.fn("Sample.greet")(function* (input: { name: string }) {
+        return \`Hello, \${input.name}!\`
+      })
+      export const pending = Effect.fn("Sample.pending")(function* (id: string) {
+        return yield* stub<string>(id)
+      })
+    `
+    const fns = indexEffectFnsInFile("libs/sample/domain/src/index.ts", src, "domain")
+    expect(fns).toEqual([
+      {
+        qualname: "libs/sample/domain/src/index.ts#greet",
+        spanName: "Sample.greet",
+        exportName: "greet",
+        file: "libs/sample/domain/src/index.ts",
+        line: 4,
+        packageTag: "domain",
+        isStub: false
+      },
+      {
+        qualname: "libs/sample/domain/src/index.ts#pending",
+        spanName: "Sample.pending",
+        exportName: "pending",
+        file: "libs/sample/domain/src/index.ts",
+        line: 7,
+        packageTag: "domain",
+        isStub: true
+      }
+    ])
+  })
+
+  it("reports duplicate spanName across indexed functions", () => {
+    const a = indexEffectFnsInFile("a.ts", `export const f = Effect.fn("Dup")(function* () {})`, "domain")
+    const b = indexEffectFnsInFile("b.ts", `export const g = Effect.fn("Dup")(function* () {})`, "domain")
+    const result = validateUniqueSpanNames([...a, ...b])
+    expect(result.duplicates).toEqual(["Dup"])
+  })
+
+  it.effect("buildWorkspaceFnIndex indexes workspace and finds Sample.greet and Sample.logToConsole", () =>
+    Effect.gen(function* () {
+      const index = yield* buildWorkspaceFnIndex(repoRoot)
+      expect(index.bySpanName.has("Sample.greet")).toBe(true)
+      const greet = index.bySpanName.get("Sample.greet")
+      expect(greet).toBeDefined()
+      expect(greet?.packageTag).toBe("domain")
+      expect(greet?.exportName).toBe("greet")
+      expect(greet?.file).toBe("libs/sample/domain/src/index.ts")
+      expect(greet?.qualname).toBe("libs/sample/domain/src/index.ts#greet")
+      expect(greet?.isStub).toBe(false)
+
+      expect(index.bySpanName.has("Sample.logToConsole")).toBe(true)
+      const logFn = index.bySpanName.get("Sample.logToConsole")
+      expect(logFn).toBeDefined()
+      expect(logFn?.packageTag).toBe("infra")
+      expect(logFn?.exportName).toBe("logToConsole")
+      expect(logFn?.file).toBe("libs/sample/infra/src/index.ts")
+      expect(logFn?.qualname).toBe("libs/sample/infra/src/index.ts#logToConsole")
+      expect(logFn?.isStub).toBe(false)
+
+      expect(index.duplicates).toEqual([])
+    })
+  )
+
+  it("oxlint rule rejects non-literal Effect.fn arguments and uninstrumented domain/infra exports", () => {
+    const rule = syntaxBansPlugin.rules["syntax-bans"]
+
+    // 1. Rejects dynamic name argument
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/domain/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.CallExpression({
+        type: "CallExpression",
+        callee: {
+          type: "MemberExpression",
+          computed: false,
+          object: { type: "Identifier", name: "Effect" },
+          property: { type: "Identifier", name: "fn" }
+        },
+        arguments: [{ type: "Identifier", name: "dynamicName" }]
+      })
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.message).toBe(
+        "Effect.fn must be called with a non-empty string literal span name (e.g. Effect.fn('Module.name'))."
+      )
+    }
+
+    // 2. Rejects empty string literal
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/domain/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.CallExpression({
+        type: "CallExpression",
+        callee: {
+          type: "MemberExpression",
+          computed: false,
+          object: { type: "Identifier", name: "Effect" },
+          property: { type: "Identifier", name: "fn" }
+        },
+        arguments: [{ type: "Literal", value: "   " }]
+      })
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.message).toBe(
+        "Effect.fn must be called with a non-empty string literal span name (e.g. Effect.fn('Module.name'))."
+      )
+    }
+
+    // 3. Rejects missing argument
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/domain/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.CallExpression({
+        type: "CallExpression",
+        callee: {
+          type: "MemberExpression",
+          computed: false,
+          object: { type: "Identifier", name: "Effect" },
+          property: { type: "Identifier", name: "fn" }
+        },
+        arguments: []
+      })
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.message).toBe(
+        "Effect.fn must be called with a non-empty string literal span name (e.g. Effect.fn('Module.name'))."
+      )
+    }
+
+    // 4. Accepts valid literal
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/domain/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.CallExpression({
+        type: "CallExpression",
+        callee: {
+          type: "MemberExpression",
+          computed: false,
+          object: { type: "Identifier", name: "Effect" },
+          property: { type: "Identifier", name: "fn" }
+        },
+        arguments: [{ type: "Literal", value: "Valid.span" }]
+      })
+      expect(reports).toHaveLength(0)
+    }
+
+    // 5. Rejects uninstrumented arrow function in domain src
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/domain/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.ExportNamedDeclaration({
+        type: "ExportNamedDeclaration",
+        declaration: {
+          type: "VariableDeclaration",
+          declarations: [
+            {
+              type: "VariableDeclarator",
+              id: { type: "Identifier", name: "unwrapped" },
+              init: { type: "ArrowFunctionExpression" }
+            }
+          ]
+        }
+      })
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.message).toBe(
+        "Exported domain functions must use Effect.fn('LiteralName') for runtime trace correlation."
+      )
+    }
+
+    // 6. Rejects function declaration in domain src
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/domain/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.ExportNamedDeclaration({
+        type: "ExportNamedDeclaration",
+        declaration: {
+          type: "FunctionDeclaration",
+          id: { type: "Identifier", name: "badFn" }
+        }
+      })
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.message).toBe(
+        "Exported domain functions must use Effect.fn('LiteralName') for runtime trace correlation."
+      )
+    }
+
+    // 7. Rejects Effect.fnUntraced in domain src
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/domain/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.ExportNamedDeclaration({
+        type: "ExportNamedDeclaration",
+        declaration: {
+          type: "VariableDeclaration",
+          declarations: [
+            {
+              type: "VariableDeclarator",
+              id: { type: "Identifier", name: "f" },
+              init: {
+                type: "CallExpression",
+                callee: {
+                  type: "MemberExpression",
+                  computed: false,
+                  object: { type: "Identifier", name: "Effect" },
+                  property: { type: "Identifier", name: "fnUntraced" }
+                },
+                arguments: []
+              }
+            }
+          ]
+        }
+      })
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.message).toBe(
+        "Exported domain functions must use Effect.fn('LiteralName') for runtime trace correlation."
+      )
+    }
+
+    // 8. Allows Effect.fn("Sample.f")(function* () {}) in domain src
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/domain/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.ExportNamedDeclaration({
+        type: "ExportNamedDeclaration",
+        declaration: {
+          type: "VariableDeclaration",
+          declarations: [
+            {
+              type: "VariableDeclarator",
+              id: { type: "Identifier", name: "f" },
+              init: {
+                type: "CallExpression",
+                callee: {
+                  type: "CallExpression",
+                  callee: {
+                    type: "MemberExpression",
+                    computed: false,
+                    object: { type: "Identifier", name: "Effect" },
+                    property: { type: "Identifier", name: "fn" }
+                  },
+                  arguments: [{ type: "Literal", value: "Sample.f" }]
+                },
+                arguments: [{ type: "FunctionExpression" }]
+              }
+            }
+          ]
+        }
+      })
+      expect(reports).toHaveLength(0)
+    }
+
+    // 9. Rejects uninstrumented arrow function in sample infra src
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/infra/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.ExportNamedDeclaration({
+        type: "ExportNamedDeclaration",
+        declaration: {
+          type: "VariableDeclaration",
+          declarations: [
+            {
+              type: "VariableDeclarator",
+              id: { type: "Identifier", name: "logToConsole" },
+              init: { type: "ArrowFunctionExpression" }
+            }
+          ]
+        }
+      })
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.message).toBe(
+        "Exported domain functions must use Effect.fn('LiteralName') for runtime trace correlation."
+      )
+    }
+
+    // 10. Does not report non-sample/domain/service/infra files (e.g. contract)
+    {
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/contract/src/index.ts",
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.ExportNamedDeclaration({
+        type: "ExportNamedDeclaration",
+        declaration: {
+          type: "VariableDeclaration",
+          declarations: [
+            {
+              type: "VariableDeclarator",
+              id: { type: "Identifier", name: "helper" },
+              init: { type: "ArrowFunctionExpression" }
+            }
+          ]
+        }
+      })
+      expect(reports).toHaveLength(0)
+    }
+  })
+})

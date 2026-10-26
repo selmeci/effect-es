@@ -1,0 +1,712 @@
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { Effect, Option, Schema } from "effect"
+import {
+  type CallExpression,
+  type NewExpression,
+  Node,
+  type ParenthesizedTypeNode,
+  Project,
+  type PropertyAccessExpression,
+  SyntaxKind,
+  ts,
+  type Type,
+  type TypeNode,
+  type UnionTypeNode
+} from "ts-morph"
+import { buildHarnessGraph } from "./graph-engine.js"
+import type {
+  EffectFnNode,
+  HarnessGraph,
+  LayerKind,
+  PackageTag,
+  PatternDocNode,
+  ServiceLayerNode,
+  ServiceTagNode,
+  TaggedErrorNode
+} from "./model.js"
+import { loadPatternDocs } from "./pattern-index.js"
+
+export interface SourceFileInput {
+  readonly filePath: string
+  readonly content: string
+  readonly packageTag: PackageTag
+}
+
+export interface TypeExtractorOptions {
+  readonly repoRoot?: string
+  readonly patternDocs?: ReadonlyArray<PatternDocNode>
+}
+
+const PackageJsonSchema = Schema.Struct({
+  nx: Schema.optional(
+    Schema.Struct({
+      tags: Schema.optional(Schema.Array(Schema.String))
+    })
+  )
+})
+
+const decodePackageJson = Schema.decodeOption(Schema.fromJsonString(PackageJsonSchema))
+
+export const resolvePackageTag = (repoRoot: string, relFilePath: string): PackageTag => {
+  if (relFilePath.startsWith("apps/") || relFilePath.includes("/apps/")) {
+    return "app"
+  }
+  let currentDir = path.dirname(path.join(repoRoot, relFilePath))
+  while (currentDir.length >= repoRoot.length) {
+    const pkgPath = path.join(currentDir, "package.json")
+    if (fs.existsSync(pkgPath)) {
+      const content = fs.readFileSync(pkgPath, "utf-8")
+      const opt = decodePackageJson(content)
+      if (Option.isSome(opt) && opt.value.nx?.tags) {
+        const tags = opt.value.nx.tags
+        if (tags.includes("type:domain")) return "domain"
+        if (tags.includes("type:infra")) return "infra"
+        if (tags.includes("type:app")) return "app"
+        if (tags.includes("type:contract") && !tags.includes("type:service")) return "contract"
+        if (tags.includes("type:service")) return "service"
+        if (tags.includes("type:contract")) return "contract"
+      }
+      break
+    }
+    const parent = path.dirname(currentDir)
+    if (parent === currentDir) break
+    currentDir = parent
+  }
+  if (relFilePath.includes("/domain/")) return "domain"
+  if (relFilePath.includes("/infra/")) return "infra"
+  if (relFilePath.includes("/contract/")) return "contract"
+  if (relFilePath.includes("/service/")) return "service"
+  return "service"
+}
+
+const resolveRepoRoot = (startDir: string): string => {
+  let curr = path.resolve(startDir)
+  while (curr !== path.dirname(curr)) {
+    if (fs.existsSync(path.join(curr, "pnpm-workspace.yaml"))) {
+      return curr
+    }
+    curr = path.dirname(curr)
+  }
+  return startDir
+}
+
+const cleanName = (raw: string): string => {
+  let name = raw.replace(/import\([^)]+\)\./g, "").trim()
+  if (name.startsWith("typeof ")) {
+    name = name.slice(7).trim()
+  }
+  return name
+}
+
+const decomposeTypeNode = (node: TypeNode): Array<string> => {
+  if (node.getKind() === SyntaxKind.UnionType) {
+    const unionNode = node as UnionTypeNode
+    return unionNode.getTypeNodes().flatMap(decomposeTypeNode)
+  }
+  if (node.getKind() === SyntaxKind.ParenthesizedType) {
+    const paren = node as ParenthesizedTypeNode
+    return decomposeTypeNode(paren.getTypeNode())
+  }
+  const raw = cleanName(node.getText())
+  if (
+    raw === "never" ||
+    raw === "unknown" ||
+    raw === "any" ||
+    raw === "void" ||
+    raw === "undefined" ||
+    raw === ""
+  ) {
+    return []
+  }
+  return [raw]
+}
+
+const decomposeType = (type: Type): Array<string> => {
+  if (type.isNever() || type.isUnknown() || type.isAny()) {
+    return []
+  }
+  if (type.isUnion()) {
+    return type.getUnionTypes().flatMap(decomposeType)
+  }
+  const sym = type.getAliasSymbol() ?? type.getSymbol()
+  const raw = cleanName(sym ? sym.getName() : type.getText())
+  if (
+    raw === "never" ||
+    raw === "unknown" ||
+    raw === "any" ||
+    raw === "void" ||
+    raw === "undefined" ||
+    raw === ""
+  ) {
+    return []
+  }
+  return [raw]
+}
+
+export const extractTypeAwareGraphFromSource = (
+  files: ReadonlyArray<SourceFileInput>,
+  options?: TypeExtractorOptions
+): HarnessGraph => {
+  const repoRoot = options?.repoRoot ?? resolveRepoRoot(process.cwd())
+  const graphNodeModules = path.join(repoRoot, "libs/harness/graph/node_modules")
+
+  const project = new Project({
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2023,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      strict: true,
+      esModuleInterop: true,
+      skipLibCheck: true,
+      paths: {
+        effect: [path.join(graphNodeModules, "effect")],
+        "effect/*": [path.join(graphNodeModules, "effect/*")],
+        "@harness/gates": [path.join(repoRoot, "libs/harness/gates/src/index.ts")],
+        "@harness/sample-contract": [path.join(repoRoot, "libs/sample/contract/src/index.ts")],
+        "@harness/sample-service": [path.join(repoRoot, "libs/sample/service/src/index.ts")],
+        "@harness/sample-domain": [path.join(repoRoot, "libs/sample/domain/src/index.ts")],
+        "@harness/sample-infra": [path.join(repoRoot, "libs/sample/infra/src/index.ts")]
+      }
+    }
+  })
+
+  const fileMap = new Map<string, SourceFileInput>()
+  for (const f of files) {
+    const normalizedRelPath = f.filePath.replace(/\\/g, "/")
+    fileMap.set(normalizedRelPath, f)
+    const absPath = path.isAbsolute(f.filePath) ? f.filePath : path.resolve(repoRoot, f.filePath)
+    project.createSourceFile(absPath, f.content, { overwrite: true })
+  }
+
+  const fns: Array<EffectFnNode> = []
+  const services: Array<ServiceTagNode> = []
+  const layers: Array<ServiceLayerNode> = []
+  const errors: Array<TaggedErrorNode> = []
+  const requiresService: Array<{ readonly callerQualname: string; readonly tagId: string }> = []
+  const failsWith: Array<{ readonly callerQualname: string; readonly errorTag: string }> = []
+  const providesService: Array<{ readonly layerQualname: string; readonly tagId: string }> = []
+  const layerRequires: Array<{ readonly layerQualname: string; readonly tagId: string }> = []
+
+  const serviceMethodErrors = new Map<string, Map<string, Array<string>>>()
+  const classNameToTagId = new Map<string, string>()
+  const referencedServices = new Set<string>()
+  const referencedErrors = new Set<string>()
+
+  // 1. First pass: Extract Services and Errors
+  for (const sourceFile of project.getSourceFiles()) {
+    const relPath = path.relative(repoRoot, sourceFile.getFilePath()).replace(/\\/g, "/")
+    const filePkgTag = fileMap.get(relPath)?.packageTag ?? resolvePackageTag(repoRoot, relPath)
+
+    for (const cls of sourceFile.getClasses()) {
+      if (!cls.isExported()) continue
+      const extClause = cls.getExtends()
+      if (!extClause) continue
+      const extText = extClause.getText()
+
+      // ServiceTag check
+      if (extText.includes("Context.Service") || extText.includes("Service<")) {
+        const clsName = cls.getName() ?? ""
+        let tagId = clsName
+        const callExprs = extClause.getDescendantsOfKind(SyntaxKind.CallExpression)
+        for (const c of callExprs) {
+          const args = c.getArguments()
+          if (args.length > 0 && args[0]?.getKind() === SyntaxKind.StringLiteral) {
+            tagId = args[0].getText().replace(/^["'`]|["'`]$/g, "")
+            break
+          }
+        }
+
+        classNameToTagId.set(clsName, tagId)
+        classNameToTagId.set(tagId, tagId)
+
+        services.push({
+          _tag: "ServiceTag",
+          tagId,
+          name: clsName,
+          packageTag: filePkgTag,
+          file: relPath
+        })
+
+        // Record methods and errors from Shape literal if present
+        const typeLiteral = extClause.getFirstDescendantByKind(SyntaxKind.TypeLiteral)
+        if (typeLiteral) {
+          const methodsMap = new Map<string, Array<string>>()
+          for (const member of typeLiteral.getMembers()) {
+            const memberName = Node.isPropertySignature(member)
+              ? member.getName()
+              : member.getFirstChildByKind(SyntaxKind.Identifier)?.getText()
+            if (!memberName) continue
+            const effectRef = member.getFirstDescendant(
+              (node) =>
+                node.getKind() === SyntaxKind.TypeReference && node.getText().includes("Effect")
+            )
+            if (effectRef && Node.isTypeReference(effectRef)) {
+              const typeArgs = effectRef.getTypeArguments()
+              if (typeArgs.length >= 2 && typeArgs[1]) {
+                const errs = decomposeTypeNode(typeArgs[1])
+                methodsMap.set(memberName, errs)
+              }
+            }
+          }
+          serviceMethodErrors.set(clsName, methodsMap)
+          if (tagId !== clsName) {
+            serviceMethodErrors.set(tagId, methodsMap)
+          }
+        }
+      }
+
+      // TaggedError check
+      if (
+        extText.includes("Data.TaggedError") ||
+        extText.includes("TaggedError(") ||
+        extText.includes("Schema.TaggedErrorClass") ||
+        extText.includes("TaggedErrorClass(")
+      ) {
+        const clsName = cls.getName() ?? ""
+        let errorTag = clsName
+        const callExprs = extClause.getDescendantsOfKind(SyntaxKind.CallExpression)
+        for (const c of callExprs) {
+          const args = c.getArguments()
+          if (args.length > 0 && args[0]?.getKind() === SyntaxKind.StringLiteral) {
+            errorTag = args[0].getText().replace(/^["'`]|["'`]$/g, "")
+            break
+          }
+        }
+        errors.push({
+          _tag: "TaggedError",
+          errorTag,
+          file: relPath
+        })
+      }
+    }
+  }
+
+  // 2. Second pass: Extract Layers and EffectFns
+  for (const sourceFile of project.getSourceFiles()) {
+    const relPath = path.relative(repoRoot, sourceFile.getFilePath()).replace(/\\/g, "/")
+    const filePkgTag = fileMap.get(relPath)?.packageTag ?? resolvePackageTag(repoRoot, relPath)
+
+    for (const varDecl of sourceFile.getVariableDeclarations()) {
+      if (!varDecl.isExported()) continue
+      const varName = varDecl.getName()
+      const typeNode = varDecl.getTypeNode()
+      const init = varDecl.getInitializer()
+      const typeText = typeNode?.getText() ?? ""
+      const initText = init?.getText() ?? ""
+
+      // Layer check
+      const isLayer =
+        typeText.includes("Layer") ||
+        initText.startsWith("Layer.") ||
+        (init &&
+          Node.isCallExpression(init) &&
+          init.getExpression().getText().startsWith("Layer."))
+
+      if (isLayer) {
+        const qualname = `${relPath}#${varName}`
+        let layerKind: LayerKind = "live"
+        if (/test/i.test(varName)) {
+          layerKind = "test"
+        } else if (/emulated/i.test(varName)) {
+          layerKind = "emulated"
+        } else if (/infra/i.test(varName)) {
+          layerKind = "infra"
+        } else {
+          layerKind = "live"
+        }
+
+        layers.push({
+          _tag: "ServiceLayer",
+          qualname,
+          layerKind,
+          packageTag: filePkgTag,
+          file: relPath
+        })
+
+        const rOutMembers = new Set<string>()
+        const rInMembers = new Set<string>()
+
+        // From TypeNode
+        if (typeNode && Node.isTypeReference(typeNode)) {
+          const typeArgs = typeNode.getTypeArguments()
+          if (typeArgs.length >= 1 && typeArgs[0]) {
+            for (const m of decomposeTypeNode(typeArgs[0])) {
+              rOutMembers.add(m)
+            }
+          }
+          if (typeArgs.length >= 3 && typeArgs[2]) {
+            for (const m of decomposeTypeNode(typeArgs[2])) {
+              rInMembers.add(m)
+            }
+          }
+        }
+
+        // From TypeChecker
+        const type = varDecl.getType()
+        const typeArgs = type.getTypeArguments()
+        if (typeArgs.length >= 3) {
+          if (typeArgs[0]) {
+            for (const m of decomposeType(typeArgs[0])) {
+              rOutMembers.add(m)
+            }
+          }
+          if (typeArgs[2]) {
+            for (const m of decomposeType(typeArgs[2])) {
+              rInMembers.add(m)
+            }
+          }
+        }
+
+        // From AST initializer fallback
+        if (
+          rOutMembers.size === 0 &&
+          rInMembers.size === 0 &&
+          init &&
+          Node.isCallExpression(init)
+        ) {
+          const args = init.getArguments()
+          if (args.length > 0 && args[0]?.getKind() === SyntaxKind.Identifier) {
+            rOutMembers.add(args[0].getText())
+          }
+          const yields = init.getDescendantsOfKind(SyntaxKind.YieldExpression)
+          for (const y of yields) {
+            const expr = y.getExpression()
+            if (expr && expr.getKind() === SyntaxKind.Identifier) {
+              rInMembers.add(expr.getText())
+            }
+          }
+        }
+
+        for (const rawROut of rOutMembers) {
+          const rOut = classNameToTagId.get(rawROut) ?? rawROut
+          providesService.push({ layerQualname: qualname, tagId: rOut })
+          referencedServices.add(rOut)
+        }
+        for (const rawRIn of rInMembers) {
+          const rIn = classNameToTagId.get(rawRIn) ?? rawRIn
+          layerRequires.push({ layerQualname: qualname, tagId: rIn })
+          referencedServices.add(rIn)
+        }
+
+        continue
+      }
+
+      // EffectFn check
+      let isEffectFn = false
+      let spanName = varName
+
+      if (init && init.getKind() === SyntaxKind.CallExpression) {
+        const outerCall = init as CallExpression
+        const innerExpr = outerCall.getExpression()
+        if (innerExpr.getKind() === SyntaxKind.CallExpression) {
+          const innerCall = innerExpr as CallExpression
+          const callee = innerCall.getExpression().getText()
+          if (callee === "Effect.fn") {
+            isEffectFn = true
+            const args = innerCall.getArguments()
+            if (args.length > 0 && args[0]?.getKind() === SyntaxKind.StringLiteral) {
+              spanName = args[0].getText().replace(/^["'`]|["'`]$/g, "")
+            }
+          } else if (callee === "Effect.fnUntraced") {
+            isEffectFn = true
+            spanName = varName
+          }
+        } else if (innerExpr.getText() === "Effect.fnUntraced") {
+          isEffectFn = true
+          spanName = varName
+        }
+      }
+
+      if (!isEffectFn || !init) continue
+
+      const qualname = `${relPath}#${varName}`
+      const line = varDecl.getStartLineNumber()
+      let isStub = false
+      let successType = "void"
+      const errorTags = new Set<string>()
+      const requiredServices = new Set<string>()
+
+      // Check stub calls
+      const calls = init.getDescendantsOfKind(SyntaxKind.CallExpression)
+      for (const c of calls) {
+        const expr = c.getExpression()
+        const exprText = expr.getText()
+        if (exprText === "stub" || exprText.endsWith(".stub")) {
+          isStub = true
+          const typeArgs = c.getTypeArguments()
+          if (typeArgs.length >= 1 && typeArgs[0]) {
+            successType = typeArgs[0].getText()
+          }
+          if (typeArgs.length >= 2 && typeArgs[1]) {
+            for (const err of decomposeTypeNode(typeArgs[1])) {
+              errorTags.add(err)
+            }
+          }
+          if (typeArgs.length >= 3 && typeArgs[2]) {
+            for (const svc of decomposeTypeNode(typeArgs[2])) {
+              requiredServices.add(svc)
+            }
+          }
+        }
+      }
+
+      // Explicit type on variable declaration
+      if (typeNode) {
+        const effectRef = typeNode.getFirstDescendant(
+          (node) => Node.isTypeReference(node) && node.getText().includes("Effect")
+        )
+        if (effectRef && Node.isTypeReference(effectRef)) {
+          const typeArgs = effectRef.getTypeArguments()
+          if (typeArgs.length >= 1 && typeArgs[0] && successType === "void") {
+            successType = typeArgs[0].getText()
+          }
+          if (typeArgs.length >= 2 && typeArgs[1]) {
+            for (const err of decomposeTypeNode(typeArgs[1])) {
+              errorTags.add(err)
+            }
+          }
+          if (typeArgs.length >= 3 && typeArgs[2]) {
+            for (const svc of decomposeTypeNode(typeArgs[2])) {
+              requiredServices.add(svc)
+            }
+          }
+        }
+      }
+
+      // TypeChecker signature return type
+      const sigs = varDecl.getType().getCallSignatures()
+      if (sigs.length > 0 && sigs[0]) {
+        const retType = sigs[0].getReturnType()
+        const typeArgs = retType.getTypeArguments()
+        if (typeArgs.length >= 1 && typeArgs[0] && successType === "void" && !typeArgs[0].isAny()) {
+          successType = typeArgs[0].getText()
+        }
+        if (
+          typeArgs.length >= 2 &&
+          typeArgs[1] &&
+          !typeArgs[1].isNever() &&
+          !typeArgs[1].isUnknown() &&
+          !typeArgs[1].isAny()
+        ) {
+          for (const err of decomposeType(typeArgs[1])) {
+            errorTags.add(err)
+          }
+        }
+        if (
+          typeArgs.length >= 3 &&
+          typeArgs[2] &&
+          !typeArgs[2].isNever() &&
+          !typeArgs[2].isUnknown() &&
+          !typeArgs[2].isAny()
+        ) {
+          for (const svc of decomposeType(typeArgs[2])) {
+            requiredServices.add(svc)
+          }
+        }
+      }
+
+      // AST yield traversal for real implementations
+      const yields = init.getDescendantsOfKind(SyntaxKind.YieldExpression)
+      const varToService = new Map<string, string>()
+      const shouldExtractYieldedServices = requiredServices.size === 0
+
+      for (const y of yields) {
+        const expr = y.getExpression()
+        if (!expr) continue
+
+        if (expr.getKind() === SyntaxKind.Identifier) {
+          const rawName = expr.getText()
+          const isServiceCandidate =
+            classNameToTagId.has(rawName) ||
+            services.some((s) => s.tagId === rawName || s.name === rawName) ||
+            /^[A-Z]/.test(rawName)
+
+          if (shouldExtractYieldedServices && isServiceCandidate) {
+            const svcName = classNameToTagId.get(rawName) ?? rawName
+            requiredServices.add(svcName)
+          }
+
+          const parent = y.getParent()
+          if (parent && parent.getKind() === SyntaxKind.VariableDeclaration) {
+            const id = parent.getFirstChildByKind(SyntaxKind.Identifier)
+            if (id) {
+              varToService.set(id.getText(), rawName)
+            }
+          }
+        }
+
+        if (expr.getKind() === SyntaxKind.CallExpression) {
+          const callExpr = expr as CallExpression
+          const calleeText = callExpr.getExpression().getText()
+          if (calleeText === "Effect.fail" || calleeText.endsWith(".fail")) {
+            const args = callExpr.getArguments()
+            if (args.length > 0 && args[0]) {
+              const arg = args[0]
+              if (arg.getKind() === SyntaxKind.NewExpression) {
+                const newExpr = arg as NewExpression
+                errorTags.add(newExpr.getExpression().getText())
+              } else if (arg.getKind() === SyntaxKind.Identifier) {
+                errorTags.add(arg.getText())
+              }
+            }
+          }
+        }
+      }
+
+      // Method calls on yielded services
+      for (const c of calls) {
+        const expr = c.getExpression()
+        if (expr.getKind() === SyntaxKind.PropertyAccessExpression) {
+          const propAccess = expr as PropertyAccessExpression
+          const objText = propAccess.getExpression().getText()
+          const methodName = propAccess.getName()
+          const svcName = varToService.get(objText)
+          if (svcName) {
+            const methodErrors = serviceMethodErrors.get(svcName)?.get(methodName)
+            if (methodErrors) {
+              for (const err of methodErrors) {
+                errorTags.add(err)
+              }
+            }
+          }
+        }
+      }
+
+      fns.push({
+        _tag: "EffectFn",
+        qualname,
+        spanName,
+        packageTag: filePkgTag,
+        file: relPath,
+        line,
+        successType,
+        isStub
+      })
+
+      for (const err of errorTags) {
+        failsWith.push({ callerQualname: qualname, errorTag: err })
+        referencedErrors.add(err)
+      }
+      for (const rawSvc of requiredServices) {
+        const svc = classNameToTagId.get(rawSvc) ?? rawSvc
+        requiresService.push({ callerQualname: qualname, tagId: svc })
+        referencedServices.add(svc)
+      }
+    }
+  }
+
+  // 3. Auto-register referenced services
+  const existingServiceTags = new Set(services.map((s) => s.tagId))
+  for (const rawSvc of referencedServices) {
+    const svc = classNameToTagId.get(rawSvc) ?? rawSvc
+    if (!existingServiceTags.has(svc)) {
+      existingServiceTags.add(svc)
+      const isInfra = /^(Cloudflare|Alchemy|Drizzle|Provider|Binding)\b/.test(svc)
+      services.push({
+        _tag: "ServiceTag",
+        tagId: svc,
+        name: svc,
+        packageTag: isInfra ? "infra" : "service",
+        file: ""
+      })
+    }
+  }
+
+  // 4. Auto-register referenced errors
+  const existingErrors = new Set(errors.map((e) => e.errorTag))
+  for (const err of referencedErrors) {
+    if (!existingErrors.has(err)) {
+      existingErrors.add(err)
+      errors.push({
+        _tag: "TaggedError",
+        errorTag: err,
+        file: ""
+      })
+    }
+  }
+
+  return buildHarnessGraph({
+    fns,
+    services,
+    layers,
+    errors,
+    tests: [],
+    patternDocs: options?.patternDocs ?? [],
+    requiresService,
+    failsWith,
+    providesService,
+    layerRequires,
+    tracedCalls: [],
+    exercisesSpans: []
+  })
+}
+
+const findWorkspaceSrcFiles = (repoRoot: string): ReadonlyArray<string> => {
+  const results: Array<string> = []
+  const subDirs = ["libs", "apps"]
+
+  const walk = (current: string): void => {
+    if (!fs.existsSync(current)) return
+    const entries = fs.readdirSync(current, { withFileTypes: true })
+    for (const e of entries) {
+      if (
+        e.name === "node_modules" ||
+        e.name === "dist" ||
+        e.name === ".nx" ||
+        e.name === "test" ||
+        e.name === "repos" ||
+        e.name === ".git" ||
+        e.name === ".harness"
+      ) {
+        continue
+      }
+      const full = path.join(current, e.name)
+      if (e.isDirectory()) {
+        walk(full)
+      } else if (
+        e.isFile() &&
+        (e.name.endsWith(".ts") || e.name.endsWith(".tsx")) &&
+        !e.name.endsWith(".d.ts") &&
+        !e.name.endsWith(".config.ts")
+      ) {
+        const rel = path.relative(repoRoot, full).replace(/\\/g, "/")
+        if (rel.includes("/src/") || rel.endsWith("alchemy.run.ts")) {
+          results.push(rel)
+        }
+      }
+    }
+  }
+
+  for (const sub of subDirs) {
+    walk(path.join(repoRoot, sub))
+  }
+
+  return results
+}
+
+export const extractWorkspaceTypeAwareGraph = (
+  repoRoot: string
+): Effect.Effect<HarnessGraph> =>
+  Effect.sync(() => {
+    const relFiles = findWorkspaceSrcFiles(repoRoot)
+    const inputs: Array<SourceFileInput> = []
+
+    for (const file of relFiles) {
+      const fullPath = path.join(repoRoot, file)
+      if (!fs.existsSync(fullPath)) continue
+      const content = fs.readFileSync(fullPath, "utf-8")
+      const packageTag = resolvePackageTag(repoRoot, file)
+      inputs.push({
+        filePath: file,
+        content,
+        packageTag
+      })
+    }
+
+    const patternDocs = loadPatternDocs(repoRoot)
+    return extractTypeAwareGraphFromSource(inputs, {
+      repoRoot,
+      patternDocs
+    })
+  })

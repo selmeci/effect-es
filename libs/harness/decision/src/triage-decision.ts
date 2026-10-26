@@ -1,0 +1,131 @@
+import { Effect, Option, Schema } from "effect"
+import * as Decision from "effect/ai/Decision"
+import * as DecisionModel from "effect/ai/DecisionModel"
+
+export const TriageV1 = Decision.make({
+  input: Schema.Struct({ failureOutput: Schema.String }),
+  decisions: {
+    kind: Decision.classify({
+      instructions:
+        "Is this test or compilation failure mechanical (syntax, imports, boundaries, typing) or semantic (logic, test expectations)?",
+      criteria: {
+        mechanical: "Mechanical error: syntax, typecheck, lint, or module boundary issue",
+        semantic: "Semantic error: logical test failure, incorrect behavior, or unexpected runtime state"
+      }
+    })
+  }
+})
+
+export interface TriageResult {
+  readonly kind: "mechanical" | "semantic"
+  readonly hint: string
+}
+
+const DETERMINISTIC_TRIAGE_RULES: ReadonlyArray<{
+  readonly pattern: string
+  readonly result: TriageResult
+}> = [
+  {
+    pattern: "floatingEffect",
+    result: {
+      kind: "mechanical",
+      hint: "Unhandled Effect value — yield* the Effect inside Effect.gen or return it (see agent-patterns/services-and-layers.md)."
+    }
+  },
+  {
+    pattern: "harness/syntax-bans",
+    result: {
+      kind: "mechanical",
+      hint: "Banned syntax in Effect code — use Effect.gen, Schema.fromJsonString, and typed errors instead of async/await, try/catch, throw, or JSON.parse (see agent-patterns/errors.md and agent-patterns/schema.md)."
+    }
+  },
+  {
+    pattern: "no-restricted-imports",
+    result: {
+      kind: "mechanical",
+      hint: "Restricted infra import outside type:infra — move drizzle-orm, alchemy, or @effect/sql-* usage to a type:infra library (see agent-patterns/d1-repository.md and agent-patterns/alchemy-infra.md)."
+    }
+  },
+  {
+    pattern: "enforce-module-boundaries",
+    result: {
+      kind: "mechanical",
+      hint: "Nx module boundary violation — check package.json nx.tags against the allowed dependency hierarchy."
+    }
+  },
+  {
+    pattern: "lazy-effect",
+    result: {
+      kind: "mechanical",
+      hint: "Effect/Layer is already lazy (TS377091) — do not wrap zero-argument Effect or Layer members in `() => Effect<...>` (use `readonly prop: Effect.Effect<...>` or parameterize factory functions; see agent-patterns/services-and-layers.md)."
+    }
+  },
+  {
+    pattern: "lazyEffect",
+    result: {
+      kind: "mechanical",
+      hint: "Effect/Layer is already lazy (TS377091) — do not wrap zero-argument Effect or Layer members in `() => Effect<...>` (use `readonly prop: Effect.Effect<...>` or parameterize factory functions; see agent-patterns/services-and-layers.md)."
+    }
+  },
+  {
+    pattern: "redundant-or-die",
+    result: {
+      kind: "mechanical",
+      hint: "Redundant Effect.orDie inside generator (TS377088) — hoist `Effect.orDie` once to the outer `Effect.gen(...).pipe(Effect.orDie)` or `Effect.fn(..., Effect.orDie)`."
+    }
+  },
+  {
+    pattern: "schema-number",
+    result: {
+      kind: "mechanical",
+      hint: "Non-finite Schema number (TS377087) — use `Schema.Finite` or `Schema.FiniteFromString` (or `Schema.Int`) instead of `Schema.Number` / `Schema.NumberFromString`."
+    }
+  },
+  {
+    pattern: "prefer-typed-schema-decoder",
+    result: {
+      kind: "mechanical",
+      hint: "Input is already assignable to Schema Encoded type (TS377092) — use `Schema.decodeSync` / `Schema.decodeEffect` instead of `decodeUnknown*`."
+    }
+  }
+]
+
+export const triageFailure = Effect.fn("Harness.triageFailure")(function* (
+  failureOutput: string
+) {
+  for (const rule of DETERMINISTIC_TRIAGE_RULES) {
+    if (failureOutput.includes(rule.pattern)) {
+      return rule.result
+    }
+  }
+
+  const outcome = yield* DecisionModel.decide(TriageV1, { input: { failureOutput } }).pipe(
+    Effect.timeoutOption("1500 millis"),
+    Effect.catchCause(() => Effect.succeedNone)
+  )
+
+  if (Option.isNone(outcome)) {
+    return {
+      kind: "semantic" as const,
+      hint: "Inspect failing test and Effect graph neighborhood via harness_tests_reaching / harness_callees."
+    }
+  }
+
+  const { answers } = outcome.value
+  yield* Effect.annotateCurrentSpan({
+    "decision.definition": "TriageV1",
+    "decision.kind": answers.kind.label
+  })
+
+  if (answers.kind.label === "mechanical") {
+    return {
+      kind: "mechanical" as const,
+      hint: "Mechanical error identified by decision model; inspect syntax, types, or configuration."
+    }
+  }
+
+  return {
+    kind: "semantic" as const,
+    hint: "Inspect failing test and Effect graph neighborhood via harness_tests_reaching / harness_callees."
+  }
+})

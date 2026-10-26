@@ -7,19 +7,33 @@
     ".": "./src/index.ts"
   },
   "nx": {
-    "tags": ["type:infra"]
+    "tags": [
+      "type:infra"
+    ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "oxlint .",
+    "typecheck": "tsc --noEmit && effect-tsgo diagnostics --strict --project tsconfig.json",
+    "lint": "oxlint --deny-warnings .",
     "test": "vitest run",
-    "verify": "pnpm run typecheck && pnpm run lint && pnpm run test"
+    "migration:check": "node scripts/check-migrations.mjs",
+    "migration:generate": "drizzle-kit generate",
+    "verify": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run migration:check"
   },
   "dependencies": {
-    "effect": "4.0.0"
+    "effect": "4.0.0",
+    "drizzle-orm": "1.0.0-rc.5-ab785fc",
+    "@effect/sql-d1": "4.0.0",
+    "@effect/sql-sqlite-do": "4.0.0",
+    "@harness/sample-contract": "workspace:*",
+    "@harness/sample-service": "workspace:*",
+    "@harness/sample-domain": "workspace:*"
   },
   "devDependencies": {
     "@effect/vitest": "4.0.0",
+    "@harness/ingest": "workspace:*",
+    "@harness/graph": "workspace:*",
+    "@types/node": "26.6.5",
+    "drizzle-kit": "1.0.0-rc.5-ab785fc",
     "vitest": "5.0.3"
   }
 }
