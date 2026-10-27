@@ -985,17 +985,22 @@ export const extractWorkspaceTypeAwareGraph = (
           if (
             !content.includes("describe(") &&
             !content.includes("it(") &&
-            !content.includes("it.effect(")
+            !content.includes("it.effect(") &&
+            !content.includes("it.prop(") &&
+            !content.includes("it.effect.prop(")
           ) {
             continue
           }
+
+          const hasPropTest = /\bit(?:\.effect)?\.prop\s*\(/.test(content)
 
           const testNode: VitestCaseNode = {
             _tag: "VitestCase",
             testId: `${relTestFile}::suite`,
             testFile: relTestFile,
             testName: relTestFile,
-            lastTreeHash: "workspace"
+            lastTreeHash: "workspace",
+            isPropertyTest: hasPropTest
           }
           const testIdx = Graph.addNode(mutable, testNode)
           updatedNodeIndexByKey.set(testNode.testId, testIdx)

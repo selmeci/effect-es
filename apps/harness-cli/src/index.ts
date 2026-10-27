@@ -26,6 +26,7 @@ import {
   loadGovernanceDocsFromDisk,
   readFrictionEvents,
   resolveHarnessStateDir,
+  runDomainMutationSuite,
   scanGraphEntropy,
   summarizeFrictionEvents,
   writeVerifyStamp
@@ -49,6 +50,7 @@ export const COMMANDS = [
   "done",
   "learn",
   "gc",
+  "mutate",
   "ingest",
   "session",
   "doctor",
@@ -742,10 +744,30 @@ const handleGc = (
     const report = scanGraphEntropy(graph, {
       expectedPatterns: hasPatternsDir ? IDIOM_BLOCKS : undefined,
       checkUntestedDomainFns: true,
+      checkDeciderPropertyTests: true,
       governanceDocs
     })
     return {
       exitCode: strict && !report.clean ? 1 : 0,
+      stdout: JSON.stringify(report),
+      stderr: ""
+    }
+  })
+
+const handleMutate = (
+  argv: ReadonlyArray<string>,
+  options: CliEnv | undefined
+): Effect.Effect<CliResult> =>
+  Effect.gen(function* () {
+    yield* Effect.void
+    const repoRoot = options?.repoRoot ?? findWorkspaceRoot()
+    const strict = argv.includes("--strict")
+    const scopeArg = argv.find((arg) => arg.startsWith("--scope="))
+    const scope = scopeArg ? scopeArg.slice("--scope=".length) : undefined
+
+    const report = runDomainMutationSuite(repoRoot, { scope })
+    return {
+      exitCode: strict && !report.passed ? 1 : 0,
       stdout: JSON.stringify(report),
       stderr: ""
     }
@@ -826,6 +848,8 @@ export const runCliEffect = (
         return yield* handleLearn(argv, options, decisionLayer)
       case "gc":
         return yield* handleGc(argv, options)
+      case "mutate":
+        return yield* handleMutate(argv.slice(1), options)
       case "ingest": {
         const repoRoot = options?.repoRoot ?? findWorkspaceRoot()
         const isAntigravity = argv.includes("--format=antigravity")

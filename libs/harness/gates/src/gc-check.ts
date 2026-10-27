@@ -11,6 +11,7 @@ export type GcFindingKind =
   | "orphan-effect-fn"
   | "missing-pattern-doc"
   | "untested-effect-fn"
+  | "missing-decider-property-test"
   | "stale-doc-reference"
 
 export interface GcFinding {
@@ -41,6 +42,7 @@ export interface GraphEntropyInput {
   readonly graph: HarnessGraph
   readonly expectedPatterns?: ReadonlyArray<string> | undefined
   readonly checkUntestedDomainFns?: boolean | undefined
+  readonly checkDeciderPropertyTests?: boolean | undefined
   readonly governanceDocs?: ReadonlyArray<GovernanceDocReference> | undefined
 }
 
@@ -63,6 +65,7 @@ const IGNORED_UNTESTED_FNS = new Set([
   "Friction.decide",
   "GraphGc.decide",
   "MigrationSafety.decide",
+  "MutationCheck.decide",
   "SessionHandoff.decide",
   "SpanBudget.decide",
   "Harness.decideGuardCommand",
@@ -85,6 +88,7 @@ export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
   const incomingProvides = new Map<Graph.NodeIndex, number>()
   const incomingFailsWith = new Map<Graph.NodeIndex, number>()
   const incomingTestOrCall = new Map<Graph.NodeIndex, number>()
+  const incomingPropertyTests = new Map<Graph.NodeIndex, number>()
 
   for (const [, edge] of Graph.edges(g)) {
     if (edge.data._tag === "RequiresService") {
@@ -100,6 +104,19 @@ export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
       incomingFailsWith.set(edge.target, (incomingFailsWith.get(edge.target) ?? 0) + 1)
     } else if (edge.data._tag === "ExercisesSpan" || edge.data._tag === "TracedCall") {
       incomingTestOrCall.set(edge.target, (incomingTestOrCall.get(edge.target) ?? 0) + 1)
+      if (edge.data._tag === "ExercisesSpan") {
+        const srcNode = Graph.getNode(g, edge.source)
+        if (
+          Option.isSome(srcNode) &&
+          srcNode.value._tag === "VitestCase" &&
+          srcNode.value.isPropertyTest === true
+        ) {
+          incomingPropertyTests.set(
+            edge.target,
+            (incomingPropertyTests.get(edge.target) ?? 0) + 1
+          )
+        }
+      }
     }
   }
 
@@ -307,6 +324,27 @@ export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
     }
   }
 
+  // 7. missing-decider-property-test
+  if (input.checkDeciderPropertyTests === true) {
+    for (const [idx, node] of Graph.nodes(g)) {
+      if (
+        node._tag === "EffectFn" &&
+        node.packageTag === "domain" &&
+        !node.isStub &&
+        (node.spanName.endsWith(".decide") || node.spanName === "decide") &&
+        !IGNORED_UNTESTED_FNS.has(node.spanName)
+      ) {
+        if ((incomingPropertyTests.get(idx) ?? 0) === 0) {
+          findings.push({
+            kind: "missing-decider-property-test",
+            nodeId: node.spanName,
+            message: `Pure domain decider "${node.spanName}" (${node.qualname}) has 0 Property-Based Tests (use it.effect.prop / it.prop with Schema arbitraries to prevent example-only blind spots).`
+          })
+        }
+      }
+    }
+  }
+
   return {
     clean: findings.length === 0,
     findings
@@ -318,6 +356,7 @@ export const scanGraphEntropy = (
   options?: {
     readonly expectedPatterns?: ReadonlyArray<string> | undefined
     readonly checkUntestedDomainFns?: boolean | undefined
+    readonly checkDeciderPropertyTests?: boolean | undefined
     readonly governanceDocs?: ReadonlyArray<GovernanceDocReference> | undefined
   }
 ): GcReport =>
@@ -326,6 +365,7 @@ export const scanGraphEntropy = (
       graph,
       expectedPatterns: options?.expectedPatterns,
       checkUntestedDomainFns: options?.checkUntestedDomainFns,
+      checkDeciderPropertyTests: options?.checkDeciderPropertyTests,
       governanceDocs: options?.governanceDocs
     })
   )

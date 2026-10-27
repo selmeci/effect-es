@@ -42,6 +42,7 @@ export interface VitestCaseNode {
   readonly testFile: string
   readonly testName: string
   readonly lastTreeHash: string
+  readonly isPropertyTest?: boolean | undefined
 }
 
 export interface PatternDocNode {

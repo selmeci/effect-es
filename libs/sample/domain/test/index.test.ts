@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer } from "effect"
+import { Effect, Exit, Layer, Schema } from "effect"
 import { buildWorkspaceFnIndex, runWithTestTracer } from "@harness/ingest"
 import {
   buildHarnessGraph,
@@ -135,6 +135,35 @@ describe("decideAlbumQuota", () => {
       expect(errAt150.albumId).toBe("album-party")
       expect(errAt150.count).toBe(150)
     })
+  )
+
+  it.effect.prop(
+    "enforces quota invariant and monotonicity across generated inputs",
+    {
+      albumId: Schema.NonEmptyString,
+      currentCount: Schema.Int.check(
+        Schema.isBetween({ minimum: -50, maximum: 250 })
+      )
+    },
+    ({ albumId, currentCount }) =>
+      Effect.gen(function* () {
+        const exit = yield* Effect.exit(
+          decideAlbumQuota({ albumId, currentCount })
+        )
+        if (currentCount >= 100) {
+          expect(Exit.isFailure(exit)).toBe(true)
+          const err = yield* Effect.flip(
+            decideAlbumQuota({ albumId, currentCount })
+          )
+          expect(err._tag).toBe("AlbumQuotaExceededError")
+          expect(err.albumId).toBe(albumId)
+          expect(err.count).toBe(currentCount)
+        } else {
+          expect(Exit.isSuccess(exit)).toBe(true)
+          const next = yield* decideAlbumQuota({ albumId, currentCount })
+          expect(next).toBe(currentCount + 1)
+        }
+      })
   )
 })
 

@@ -1449,7 +1449,7 @@
           <div>
             <h2 class="card-title">🛡️ Pokročilé Snímače Kvality a Grafu (2026)</h2>
             <p class="card-subtitle">
-              Deterministická detekcia softvérovej entropie pomocou <code>GraphGc.decide</code> a runtime výkonnostných regresií cez <code>SpanBudget.decide</code>.
+              Deterministická detekcia softvérovej entropie pomocou <code>GraphGc.decide</code>, runtime výkonnostných regresií cez <code>SpanBudget.decide</code> a cielený AST mutation testing cez <code>MutationCheck.decide</code> (<code>harness mutate --strict</code> — 100% Domain Mutation Score).
             </p>
           </div>
         </div>
@@ -1466,7 +1466,7 @@
         <!-- Panel 1: harness gc -->
         <div id="quality-view-gc" class="quality-subtab-content">
           <div style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
-            Príkaz <code>harness gc --strict</code> spúšťa čistú rozhodovaciu funkciu <code>GraphGc.decide</code> nad celým <code>HarnessGraph</code>. Odhaľuje mŕtvy kód, neotestované funkcie (<code>untested-effect-fn</code>), nepoužité či neposkytnuté služby a zastarané referencie v dokumentácii (<code>stale-doc-reference</code> v <code>libs/&lt;scope&gt;/docs/{adr,specs}/*.md</code> a <code>docs/{adr,specs}/*.md</code>) pred <code>verify</code> a <code>done</code>.
+            Príkaz <code>harness gc --strict</code> spúšťa čistú rozhodovaciu funkciu <code>GraphGc.decide</code> nad celým <code>HarnessGraph</code>. Odhaľuje mŕtvy kód, neotestované funkcie (<code>untested-effect-fn</code>), netestované decider invarianty (<code>missing-decider-property-test</code> vyžadujúci <code>it.effect.prop</code> zo <code>Schema</code>), nepoužité či neposkytnuté služby a zastarané referencie v dokumentácii (<code>stale-doc-reference</code> v <code>libs/&lt;scope&gt;/docs/{adr,specs}/*.md</code> a <code>docs/{adr,specs}/*.md</code>). V kombinácii s <code>harness mutate --strict</code> (<code>MutationCheck.decide</code> — 100% Domain Mutation Score, 0 prežitých mutantov) garantuje, že testy majú skutočnú diskriminačnú silu pred <code>verify</code> a <code>done</code>.
           </div>
 
           <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
@@ -1484,6 +1484,9 @@
             </button>
             <button class="gc-pill scenario-pill" data-gc-scenario="untested-effect-fn">
               <span>⚠️</span> untested-effect-fn
+            </button>
+            <button class="gc-pill scenario-pill" data-gc-scenario="missing-decider-property-test">
+              <span>⚠️</span> missing-decider-property-test
             </button>
             <button class="gc-pill scenario-pill" data-gc-scenario="missing-pattern-doc">
               <span>⚠️</span> missing-pattern-doc
@@ -2054,11 +2057,11 @@ expect(violations).toHaveLength(0);</code></pre>
         happy: {
           status: "PASS",
           badgeClass: "badge-pass",
-          scenarioTitle: "Happy Path: Nahradenie stub() reálnou logikou, Multi-Lens Review a harness gc --strict",
+          scenarioTitle: "Happy Path: Nahradenie stub() reálnou logikou, Multi-Lens Review, harness gc a harness mutate",
           who: "Izolovaný implementačný subagent spustený cez skill `executing-effect-stubs`.",
           input: 'Vstupný súbor so stub() + nová produkčná implementácia s `Effect.gen`, `Schema.decode`, `Effect.catchTag` a `@effect/vitest` testami.',
-          underTheHood: '1. Subagent prepisuje telá funkcií bez zakázanej syntaxe, inkrementálne overuje lint a testy; `harness ingest` reindexuje spany.\n2. Pred verifikáciou koordinátor spustí Signal-Routed Multi-Lens `flash` Review (paralelné špecializované subagenty: `EARS & Test-Fidelity`, `Security & Trust-Boundary`, `Reliability & Concurrency`, `Adversarial Chaos`).\n3. Prebehne kontrola nulovej entropie a dosiahnuteľnosti testov cez `harness gc --strict` (overenie 0 chýb a nulového počtu `untested-effect-fn`).',
-          output: 'Implementovaný modul bez stub(), multi-lens review schválené, `harness gc --strict` čisté (0 chýb, 0 untested-effect-fn), jednotkové testy `it.effect` prechádzajú na 100%.\nExit kód: 0 (PASS)',
+          underTheHood: '1. Subagent prepisuje telá funkcií bez zakázanej syntaxe, inkrementálne overuje lint a testy; `harness ingest` reindexuje spany.\n2. Pred verifikáciou koordinátor spustí Signal-Routed Multi-Lens `flash` Review (paralelné špecializované subagenty: `EARS & Test-Fidelity`, `Security & Trust-Boundary`, `Reliability & Concurrency`, `Adversarial Chaos`).\n3. Prebehne kontrola nulovej entropie cez `harness gc --strict` (0 chýb, 0 untested-effect-fn, 0 missing-decider-property-test) a cielený AST mutation test cez `harness mutate --strict` (100% mutation score, 0 prežitých mutantov).',
+          output: 'Implementovaný modul bez stub(), multi-lens review schválené, `harness gc --strict` čisté (0 chýb), `harness mutate --strict` 100% killed (0 survived), testy `it.effect` a property testy `it.effect.prop` prechádzajú.\nExit kód: 0 (PASS)',
           next: 'Prechod do fázy 5: Spustenie finálnej verifikácie cez `harness verify` a zápis kryptografickej pečiatky.'
         },
         failure: {
@@ -2685,6 +2688,22 @@ expect(violations).toHaveLength(0);</code></pre>
           }]
         }, null, 2),
         fix: "Napíšte test v @effect/vitest (it.effect) spustený cez runWithTestTracer, ktorý pokrýva doménový use-case Cart.checkout."
+      },
+      "missing-decider-property-test": {
+        title: "Chýbajúci property test decidera: PhotoQuotaDecider.decide",
+        badgeClass: "badge badge-block",
+        badgeText: "CLEAN: FALSE",
+        desc: "Čistý doménový decider (*.decide v type:domain) nemá v testoch žiadny property-based test (it.effect.prop / it.prop) generovaný zo Schema arbitraries.",
+        exit: "exitCode: 1",
+        output: JSON.stringify({
+          clean: false,
+          findings: [{
+            kind: "missing-decider-property-test",
+            nodeId: "PhotoQuotaDecider.decide",
+            message: "Domain decider 'PhotoQuotaDecider.decide' requires at least one property-based test (it.effect.prop / it.prop) over Schema arbitraries. Example-only tests allow boundary mutations to survive."
+          }]
+        }, null, 2),
+        fix: "Napíšte property-based test cez it.effect.prop alebo it.prop v @effect/vitest s arbitraries zo Schema (effect/Arbitrary), ktorý otestuje hraničné invarianty a zabije všetky mutanty v harness mutate --strict."
       },
       "missing-pattern-doc": {
         title: "Chýbajúca dokumentácia vzoru: durable-object-state",

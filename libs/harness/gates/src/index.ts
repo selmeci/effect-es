@@ -9,4 +9,5 @@ export * from "./session-handoff.js"
 export * from "./span-budget.js"
 export * from "./worktree.js"
 export * from "./migration-check.js"
+export * from "./mutation-check.js"
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { Effect } from "effect"
 import { buildHarnessGraph, loadGraphSnapshot } from "@harness/graph"
 import {
@@ -10,13 +10,17 @@ import {
   checkSpanBudgets,
   decideGraphEntropy,
   decideMigrationSafety,
+  decideMutationReport,
   decideSessionHandoff,
   decideSpanBudgets,
   diffPlanAndImplGraphs,
+  discoverDomainMutants,
+  evaluateMutationOutcomes,
   loadGovernanceDocsFromDisk,
   parseGovernanceDocFrontmatter,
   resolveHarnessStateDir,
   scanGraphEntropy,
+  type CodeMutant,
   type FrictionCluster,
   type GovernanceDocReference,
   type SpanSample
@@ -912,5 +916,189 @@ status: accepted
         resolveHarnessStateDir("/repo", { HARNESS_STATE_DIR: "/tmp/custom-state" })
       ).toBe("/tmp/custom-state")
     })
+  })
+
+  describe("decider property tests & AST mutation testing", () => {
+    it.effect("flags domain *.decide without property-based test and passes when property test exists", () =>
+      Effect.gen(function* () {
+        const fnQualname = "libs/sample/domain/src/index.ts#Album.decide"
+        const testId = "libs/sample/domain/test/index.test.ts::suite"
+
+        const graphWithoutProp = buildHarnessGraph({
+          fns: [
+            {
+              qualname: fnQualname,
+              spanName: "Album.decide",
+              packageTag: "domain",
+              file: "libs/sample/domain/src/index.ts",
+              line: 14,
+              successType: "number",
+              isStub: false
+            }
+          ],
+          tests: [
+            {
+              testId,
+              testFile: "libs/sample/domain/test/index.test.ts",
+              testName: "libs/sample/domain/test/index.test.ts",
+              lastTreeHash: "workspace",
+              isPropertyTest: false
+            }
+          ],
+          exercisesSpans: [
+            {
+              testId,
+              calleeQualname: fnQualname,
+              callCount: 1,
+              receiverLayer: null
+            }
+          ]
+        })
+
+        const failingReport = yield* decideGraphEntropy({
+          graph: graphWithoutProp,
+          checkDeciderPropertyTests: true
+        })
+
+        expect(failingReport.clean).toBe(false)
+        const missing = failingReport.findings.find(
+          (f) => f.kind === "missing-decider-property-test"
+        )
+        expect(missing).toBeDefined()
+        expect(missing?.nodeId).toBe("Album.decide")
+        expect(missing?.message).toContain("0 Property-Based Tests")
+
+        // Now test with isPropertyTest: true
+        const graphWithProp = buildHarnessGraph({
+          fns: [
+            {
+              qualname: fnQualname,
+              spanName: "Album.decide",
+              packageTag: "domain",
+              file: "libs/sample/domain/src/index.ts",
+              line: 14,
+              successType: "number",
+              isStub: false
+            }
+          ],
+          tests: [
+            {
+              testId,
+              testFile: "libs/sample/domain/test/index.test.ts",
+              testName: "libs/sample/domain/test/index.test.ts",
+              lastTreeHash: "workspace",
+              isPropertyTest: true
+            }
+          ],
+          exercisesSpans: [
+            {
+              testId,
+              calleeQualname: fnQualname,
+              callCount: 1,
+              receiverLayer: null
+            }
+          ]
+        })
+
+        const passingReport = yield* decideGraphEntropy({
+          graph: graphWithProp,
+          checkDeciderPropertyTests: true
+        })
+
+        const deciderFindings = passingReport.findings.filter(
+          (f) => f.kind === "missing-decider-property-test"
+        )
+        expect(deciderFindings).toHaveLength(0)
+      })
+    )
+
+    it("discovers boundary, equality, and arithmetic mutants in domain code", () => {
+      let root = process.cwd()
+      while (root !== dirname(root)) {
+        if (existsSync(join(root, "pnpm-workspace.yaml"))) {
+          break
+        }
+        root = dirname(root)
+      }
+      const diskSource = readFileSync(
+        join(root, "libs/sample/domain/src/index.ts"),
+        "utf8"
+      )
+      // diskSource has >= and + 1; append equality operator for comprehensive discovery check
+      const sampleSource = `${diskSource}\nconst isExact = (a: number) => a === 100\n`
+      const mutants = discoverDomainMutants(
+        "libs/sample/domain/src/index.ts",
+        sampleSource
+      )
+
+      const boundary = mutants.find(
+        (m) => m.category === "boundary-operator" && m.original === ">=" && m.replacement === ">"
+      )
+      expect(boundary).toBeDefined()
+      expect(boundary?.line).toBe(18)
+      expect(boundary?.mutatedSource).toContain("input.currentCount > 100")
+
+      const arithmetic = mutants.find(
+        (m) => m.category === "arithmetic-operator" && m.original === "+ 1" && m.replacement === "- 1"
+      )
+      expect(arithmetic).toBeDefined()
+      expect(arithmetic?.line).toBe(24)
+      expect(arithmetic?.mutatedSource).toContain("input.currentCount - 1")
+
+      const equality = mutants.find(
+        (m) => m.category === "equality-operator" && m.original === "===" && m.replacement === "!=="
+      )
+      expect(equality).toBeDefined()
+      expect(equality?.mutatedSource).toContain("a !== 100")
+    })
+
+    it.effect("evaluates mutation outcomes and computes correct mutation score", () =>
+      Effect.gen(function* () {
+        const dummyMutant1: CodeMutant = {
+          id: "test:1:>=->>",
+          file: "test.ts",
+          line: 1,
+          category: "boundary-operator",
+          original: ">=",
+          replacement: ">",
+          mutatedSource: "x > 1"
+        }
+        const dummyMutant2: CodeMutant = {
+          id: "test:2:+ 1->- 1",
+          file: "test.ts",
+          line: 2,
+          category: "arithmetic-operator",
+          original: "+ 1",
+          replacement: "- 1",
+          mutatedSource: "x - 1"
+        }
+
+        // All killed -> pass with score 1
+        const allKilledReport = evaluateMutationOutcomes([
+          { mutant: dummyMutant1, status: "killed" },
+          { mutant: dummyMutant2, status: "killed" }
+        ])
+        expect(allKilledReport.passed).toBe(true)
+        expect(allKilledReport.totalMutants).toBe(2)
+        expect(allKilledReport.killedCount).toBe(2)
+        expect(allKilledReport.survivedCount).toBe(0)
+        expect(allKilledReport.mutationScore).toBe(1)
+        expect(allKilledReport.survivedMutants).toHaveLength(0)
+
+        // One survived -> fail with survivedMutants listing
+        const oneSurvivedReport = yield* decideMutationReport({
+          outcomes: [
+            { mutant: dummyMutant1, status: "killed" },
+            { mutant: dummyMutant2, status: "survived" }
+          ]
+        })
+        expect(oneSurvivedReport.passed).toBe(false)
+        expect(oneSurvivedReport.totalMutants).toBe(2)
+        expect(oneSurvivedReport.killedCount).toBe(1)
+        expect(oneSurvivedReport.survivedCount).toBe(1)
+        expect(oneSurvivedReport.mutationScore).toBe(0.5)
+        expect(oneSurvivedReport.survivedMutants).toEqual([dummyMutant2])
+      })
+    )
   })
 })

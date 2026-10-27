@@ -503,7 +503,8 @@ Harness CLI podporuje bezproblémovú koexistenciu oboch popredných agentickýc
 | **`session` / `doctor`** | **Arg:** `harness session`<br/>**stdout:** `{"nodeVersion": "...", "nodeOk": true, "snapshotDirOk": true, "omnigraphInitialized": true, "modelWarm": true, "handoff": {...}}` | **Arg:** `harness session --format=antigravity`<br/>**stdout:** `{"injectSteps": ["[Harness Context Handoff] Active stub() skeletons remaining: ..."]}` | • `exitCode: 0` (prostredie OK)<br/>• `exitCode: 1` (Node < 24 alebo zlyhanie) | Overuje dostupnosť Node.js 24+, existenciu `.harness/`, dostupnosť Omnigraphu a zahriatie modelu `clef-flash`. Cez `SessionHandoff.decide` automaticky injektuje rozpracovaný stav (`activeStubs`, `missingPlannedFns`, `stampValid`, `frictionClusters`). |
 | **`route`** | **Arg:** `harness route "<step>"`<br/>**stdout:** Názov súboru (napr. `agent-patterns/d1-repository.md` alebo `"review"`) | **Rovnaké CLI volanie** alebo cez MCP nástroj `harness_route` s parametrom `{"planStep": "..."}` | `exitCode: 0` | Nájde zodpovedajúci vzor architektúry Effect/Alchemy. |
 | **`plan-check`** | **Arg:** `harness plan-check`<br/>Voliteľne: `--graph-only`<br/>**stdout:** Kompletný Mermaid diagram grafu<br/>**stderr:** Zoznam chýb a porušení pravidiel | **Rovnaké CLI volanie** (spúšťa sa priamo v termináli agenta) | • `exitCode: 0` (plán overený)<br/>• `exitCode: 1` (chyba typov, duplicitný span, cyklus alebo nepovolená závislosť) | Overuje integritu skeletonu, generuje `.harness/plan-graph-snapshot.json` a ukladá do Omnigraph branch `plan/current`. |
-| **`gc`** | **Arg:** `harness gc`<br/>**stdout (čisté):** `{"clean": true, "findings": []}`<br/>**stderr (nálezy):** Zoznam `GcFinding` (`unused-service`, `unprovided-service`, `dead-tagged-error`, `orphan-effect-fn`, `missing-pattern-doc`) | **Rovnaké CLI volanie** (alebo `--format=antigravity`) | • `exitCode: 0` (graf čistý)<br/>• `exitCode: 1` (zistené mŕtve uzly/entropia) | Skenuje `HarnessGraph` cez `GraphGc.decide`. Zabraňuje hromadeniu mŕtvych chýb, nepoužitých služieb a chýbajúcich vzorov pred `verify` a `done`. |
+| **`gc`** | **Arg:** `harness gc`<br/>Voliteľne: `--strict`<br/>**stdout (čisté):** `{"clean": true, "findings": []}`<br/>**stderr (nálezy):** Zoznam `GcFinding` (`unused-service`, `unprovided-service`, `dead-tagged-error`, `orphan-effect-fn`, `untested-effect-fn`, `missing-decider-property-test`, `missing-pattern-doc`, `stale-doc-reference`) | **Rovnaké CLI volanie** (alebo `--format=antigravity`) | • `exitCode: 0` (graf čistý)<br/>• `exitCode: 1` (zistené mŕtve uzly/entropia) | Skenuje `HarnessGraph` cez `GraphGc.decide`. Zabraňuje hromadeniu mŕtvych chýb, nepoužitých služieb, netestovaných deciderov a chýbajúcich vzorov pred `verify` a `done`. |
+| **`mutate`** | **Arg:** `harness mutate`<br/>Voliteľne: `--strict`<br/>**stdout (100% skóre):** `{"totalMutants": 8, "killed": 8, "survived": 0, "mutationScore": 1}`<br/>**stderr (prežité mutanty):** Zoznam prežitých mutantov v `type:domain` | **Rovnaké CLI volanie** (alebo `--format=antigravity`) | • `exitCode: 0` (100% mutantov zabitých)<br/>• `exitCode: 1` (prežité mutanty pri `--strict`) | Cielené AST mutačné testovanie doménovej logiky (`MutationCheck.decide`). Injektuje hraničné a aritmetické operátory (`>=` $\to$ `>`, `+ 1` $\to$ `- 1`) a overuje, že testy majú reálnu diskriminačnú silu. |
 | **`verify`** | **Arg:** `harness verify`<br/>**stdout:** Reťazec pečiatky: `{"treeHash": "...", "timestamp": "...", "taskBranch": "impl/current"}`<br/>**stderr:** Detaily o zlyhaní testov alebo nájdených `stub()` | **Rovnaké CLI volanie** (spúšťa sa priamo v termináli agenta) | • `exitCode: 0` (overenie úspešné)<br/>• `exitCode: 1` (nájdený `stub()`, zlyhanie testu, neplatný graf) | **Jediná autorizovaná brána.** Spúšťa testy s testovacím tracerom, zapisuje `.harness/verify-stamp.json` a branch `impl/current`. |
 | **`done`** | **Arg:** `harness done`<br/>**stdout (úspech):** `""`<br/>**stdout (zlyhanie):** `{"decision": "block", "reason": "..."}` | **Arg:** `harness done --format=antigravity`<br/>**stdin:** `{"fullyIdle": true}`<br/>**stdout (úspech):** `{"decision": "stop"}`<br/>**stdout (pokračovať):** `{"decision": "continue", "reason": "..."}` | `exitCode: 0` | Záverečný `Stop` hook. Kontroluje nezmenenosť stromu cez SHA-256 pečiatku, paritu grafov plánu a implementácie a robí merge v Omnigraphe. |
 | **`learn`** | **Arg:** `harness learn`<br/>Voliteľne: `--clear`<br/>**stdout:** Prehľad klastrov trenia a odporúčaní `LearnProposalV1` | **Rovnaké CLI volanie** | `exitCode: 0` | Analyzuje `.harness/friction-log.jsonl`, navrhuje povýšenia do 4 cieľov pyramídy a s `--clear` vymaže log trenia. |
@@ -669,26 +670,30 @@ graph TD
         WORKTREE["4. Worktree-Safe Izolácia<br/>(resolveHarnessStateDir)"]
         GATES["5. Security & Migration Gates<br/>(syntax-bans & MigrationSafety)"]
         LENSES["6. Multi-Lens Review<br/>(Signal-Routed flash Subagents)"]
+        MUTATE["7. AST Mutation Testing<br/>(MutationCheck.decide)"]
     end
 
-    GC -->|Audituje| G_ENTROPY["unused-service<br/>unprovided-service<br/>dead-tagged-error<br/>orphan-effect-fn<br/>untested-effect-fn<br/>missing-pattern-doc"]
+    GC -->|Audituje| G_ENTROPY["unused-service<br/>unprovided-service<br/>dead-tagged-error<br/>orphan-effect-fn<br/>untested-effect-fn<br/>missing-decider-property-test<br/>missing-pattern-doc<br/>stale-doc-reference"]
     HANDOFF -->|Injektuje| HO_DATA["activeStubs<br/>missingPlannedFns<br/>verify-stamp stav<br/>friction clusters"]
     BUDGET -->|Deteguje| B_VIOLATION["n-plus-one-call<br/>span-duration-exceeded"]
     WORKTREE -->|Izoluje| WT_DIR[".harness/worktrees/&lt;id&gt;<br/>HARNESS_WORKTREE_ID"]
     GATES -->|Blokuje| G_SAFETY["Config.redacted<br/>raw SQL injection<br/>Schedule.forever<br/>DROP / rebuild / NOT NULL"]
     LENSES -->|Overuje| L_SPECIALISTS["EARS & Test-Fidelity<br/>Security & Trust<br/>Reliability & Concurrency<br/>Adversarial Chaos"]
+    MUTATE -->|Vyžaduje| M_SCORE["100% Mutation Score<br/>0 prežitých mutantov<br/>(>=, <=, ===, +1)"]
 ```
 
 ### 6.1 `harness gc` (`GraphGc.decide` — Boj proti entropii a mŕtvemu kódu)
 
-Počas rýchlych iterácií v subagentoch dochádza k hromadeniu mŕtveho kódu, ktorý bežný TypeScript kompilátor toleruje. Príkaz `harness gc` spúšťa statickú analýzu nad celým `HarnessGraph` a pomocou čistej rozhodovacej funkcie `GraphGc.decide` identifikuje 6 druhov entropie:
+Počas rýchlych iterácií v subagentoch dochádza k hromadeniu mŕtveho kódu, ktorý bežný TypeScript kompilátor toleruje. Príkaz `harness gc` spúšťa statickú analýzu nad celým `HarnessGraph` a pomocou čistej rozhodovacej funkcie `GraphGc.decide` identifikuje 8 druhov entropie:
 
 1. **`unused-service`:** Služba (`Context.Service`), ktorú v monorepe nepožaduje žiadna funkcia v parametri prostredia `R`.
 2. **`unprovided-service`:** Služba požadovaná doménou v type `R`, ktorá však nie je poskytnutá žiadnym produkčným `Layer`om v `type:infra` ani `type:app`.
 3. **`dead-tagged-error`:** Chybová trieda (`Schema.TaggedErrorClass`), ktorú žiadna use-case funkcia nevracia v type `E`.
 4. **`orphan-effect-fn`:** Funkcia deklarovaná cez `Effect.fn`, na ktorú neodkazuje žiadny volajúci ani integračný test.
 5. **`untested-effect-fn` (pri `--strict`):** Doménová funkcia deklarovaná cez `Effect.fn`, ktorá nemá v grafe prichádzajúcu `ExercisesSpan` hranu z `@effect/vitest` testov. Každý doménový use-case musí byť overený aspoň jedným testom.
-6. **`missing-pattern-doc`:** Použitý architektonický blok, ku ktorému chýba zdokumentovaný predpis v `agent-patterns/*.md`.
+6. **`missing-decider-property-test` (pri `--strict`):** Čistý doménový decider (`*.decide` v `type:domain`), ktorý nie je testovaný property-based testom (`it.effect.prop` alebo `it.prop`). Všetky pure decidery (klauzuly EARS `WHILE <state>`) a reducery/projekcie musia byť overené voči arbitrárnym generovaným vstupom zo `Schema` cez `effect/Arbitrary`.
+7. **`missing-pattern-doc`:** Použitý architektonický blok, ku ktorému chýba zdokumentovaný predpis v `agent-patterns/*.md`.
+8. **`stale-doc-reference` (pri `--strict`):** Odkaz v akceptovaných špecifikáciách alebo ADR na neexistujúci súbor v `enforced_by` alebo neexistujúci symbol (`spans`, `services`, `errors`) v grafe.
 
 ```bash
 node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts gc --strict
@@ -827,6 +832,56 @@ Harness MVP v2 zavádza systém **Živej, Strojovo Overiteľnej Architektonickej
    - Po implementácii a nastavení `status: accepted` príkaz `harness gc --strict` cez pravidlo **`stale-doc-reference`** overí existenciu súborov v `enforced_by` a prítomnosť všetkých symbolov v produkčnom kóde.
    - Následne `harness done` cez **`diffHarnessGraphs`** (porovnanie vetiev `plan/current` a `impl/current`) garantuje, že implementácia nevynechala žiadnu funkciu, službu ani chybový kanál z overeného plánu.
 
+### 6.8 Property-Based Testing (`it.effect.prop` + `effect/Arbitrary`) a Cielený AST Mutation Testing (`MutationCheck.decide` / `harness mutate`) — Ochrana proti Test Reward Hackingu
+
+Klasické príkladové unit testy (example-based testing, napr. `expect(decide(5)).toBe(true)`) zlyhávajú v prostredí autonómneho kódovania AI agentov kvôli dvom systémovým rizikám:
+1. **Zdieľané slepé miesta (Shared Blind Spots):** LLM agent generujúci produkčný kód aj testy zdieľa rovnaké konceptuálne predpoklady. Ak agent zabudne na okrajový prípad (off-by-one chyba, záporné hranice, prekročenie kvóty), s vysokou pravdepodobnosťou vygeneruje testy, ktoré presne tento okrajový prípad obídu a overia len happy-path.
+2. **Test Reward Hacking:** LLM agenti optimalizujú svoje správanie na splnenie metriky (zelené testy). Ak test suite overuje len konkrétny hardcoded vstup, agent môže vytvoriť triviálnu, degenerovanú implementáciu (napr. návrat konštanty), ktorá prejde testami, no v skutočnosti neimplementuje žiadnu skutočnú doménovú logiku.
+
+Harness MVP v2 uzatvára túto zraniteľnosť dvojicou komplementárnych mechanizmov: **Property-Based Testing** priamo zo `Schema` a **Cielený AST Mutation Testing** cez `harness mutate`.
+
+#### 1. Property-Based Testing s automatickým shrinkovaním (`it.effect.prop` a `it.prop`)
+
+Balík `@effect/vitest` natívne podporuje generovanie stoviek náhodných vstupov priamo z `Schema` definícií prostredníctvom modulu `effect/Arbitrary`:
+- **Čisté decider invarianty (`WHILE <state>` klauzuly):** Namiesto testovania `decide(5)` sa overujú matematické invarianty na celom rozsahu hodnôt generovaných zo schémy:
+  ```ts
+  it.effect.prop(
+    "enforces quota invariant across arbitrary count and limits",
+    {
+      albumId: Schema.NonEmptyString,
+      currentCount: Schema.Number.pipe(Schema.int(), Schema.between(-50, 250)),
+      maxAllowed: Schema.Number.pipe(Schema.int(), Schema.between(1, 100))
+    },
+    ({ albumId, currentCount, maxAllowed }) =>
+      Effect.gen(function* () {
+        const decision = PhotoQuotaDecider.decide({ albumId, currentCount, maxAllowed })
+        if (currentCount >= maxAllowed) {
+          expect(decision._tag).toBe("QuotaExceeded")
+          if (decision._tag === "QuotaExceeded") {
+            expect(decision.currentCount).toBe(currentCount)
+            expect(decision.maxAllowed).toBe(maxAllowed)
+          }
+        } else {
+          expect(decision._tag).toBe("QuotaAllowed")
+        }
+      })
+  )
+  ```
+- **Invarianty idempotencie a round-trip serializácie:** Projekcie a reducery stavu musia byť idempotentné (`project(project(s, e), e) === project(s, e)`) a serializácia schém musí byť bezstratová (`decodeUnknownSync(encodeSync(e)) === e`).
+- **Automatické shrinkovanie:** Ak generátor nájde vstup spôsobujúci zlyhanie, `effect/Arbitrary` ho automaticky zredukuje (shrinkne) na najmenší možný reprodukovateľný protipríklad (napr. presná hrana `count === maxAllowed`).
+- **Senzor `missing-decider-property-test` v `harness gc --strict`:** `GraphGc.decide` vyžaduje, aby každý čistý doménový decider (`*.decide` v `type:domain`) disponoval aspoň jedným property testom.
+
+#### 2. Cielený Domain AST Mutation Testing (`MutationCheck.decide` / `harness mutate --strict`)
+
+Aby sa predišlo vákuovým testom, kde property test síce generuje vstupy, ale má príliš slabé tvrdenia (`expect(result).toBeDefined()`), harness zavádza cielené mutačné testovanie AST:
+- **Cielená doménová mutácia:** Na rozdiel od tradičných nástrojov (napr. Stryker), ktoré mutujú celý kód vrátane I/O a trvajú desiatky minút, `harness mutate` cielene mutuje výhradne čistú biznis logiku v `type:domain`.
+- **AST mutátory:** `MutationCheck.decide` injektuje sémantické mutácie na operátoroch:
+  - Relačné operátory: `>=` $\to$ `>`, `<=` $\to$ `<`, `>` $\to$ `>=`, `<` $\to$ `<=`
+  - Rovnosť: `===` $\to$ `!==`, `!==` $\to$ `===`
+  - Aritmetické inkrementy: `+ 1` $\to$ `- 1`, `- 1` $\to$ `+ 1`
+  - Logické spojky: `&&` $\to$ `||`, `||` $\to$ `&&`
+- **Brána 100% Mutation Score:** Pre každého mutanta sa v pamäti skompiluje zmenené AST a spustí sa `@effect/vitest`. Ak testy prejdú, mutant **prežil** (test gap). Ak testy zlyhajú, mutant je **zabitý**. Príkaz `harness mutate --strict` vyžaduje **100% mutation score (0 prežitých mutantov)** predtým, než je povolené spustiť `harness verify`. Tým sa garantuje, že testy majú skutočné "zuby" a zachytia akúkoľvek hraničnú chybu.
+
 ---
 
 ## 7. Zhrnutie kľúčových pravidiel pre agentov
@@ -836,5 +891,5 @@ Harness MVP v2 zavádza systém **Živej, Strojovo Overiteľnej Architektonickej
 3. **Platnosť pečiatky je krehká:** Príkaz `harness verify` musí byť spustený ako úplne posledný krok po akýchkoľvek úpravách kódu. Akákoľvek následná zmena súboru zneplatní hash stromu v `.harness/verify-stamp.json` a zablokuje `harness done`.
 4. **Respektujte eskalácie:** Ak `openapi:check` alebo `migration:check` skončí s kódom `exit 2` a reťazcom `ESCALATE`, okamžite zastavte prácu a predložte breaking zmenu alebo deštruktívnu migráciu na rozhodnutie používateľovi.
 5. **Nenafukujte `AGENTS.md`:** Opakujúce sa problémy riešte výhradne cez skill `compounding-effect-learnings` a 5 cieľov povýšenia (Graduation Pyramid: `agent-pattern`, `triage-rule`, `guard-allowlist`, `ast-graph-gate`, `adr`).
-6. **Čistota grafu, brány a rozpočty:** Pred `verify` overte absenciu mŕtveho a netestovaného kódu cez `harness gc --strict`, dodržujte bezpečnostné zákazy v `syntax-bans.js`, rešpektujte `MigrationSafety.decide` a v testoch presadzujte span rozpočty cez `checkSpanBudgets`.
+6. **Čistota grafu, brány a rozpočty:** Pred `verify` overte absenciu mŕtveho a netestovaného kódu cez `harness gc --strict` (vrátane `missing-decider-property-test`), pri zmenách v `type:domain` dosiahnite 100% mutation score cez `harness mutate --strict`, dodržujte bezpečnostné zákazy v `syntax-bans.js`, rešpektujte `MigrationSafety.decide` a v testoch presadzujte span rozpočty cez `checkSpanBudgets`.
 7. **Živá dokumentácia a spec governance:** Každú novú funkcionalitu začnite formalizáciou EARS požiadaviek v `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (`status: proposed`, so scoped `id: <scope>:SPEC-NNNN`, s fallbackom na koreňové `docs/specs/` len pri prierezových celo-monorepových zmenách). Po úspešnom `plan-check` doplňte Mermaid graf, po implementácii nastavte `status: accepted` a overte platnosť odkazov cez `stale-doc-reference` v `harness gc --strict`. Netriviálne architektonické kompromisy so zamietnutými alternatívami povinne zaznamenajte do doménového `libs/<scope>/docs/adr/NNNN-<slug>.md` (so scoped `id: <scope>:ADR-NNNN`, alebo `docs/adr/` pre celo-monorepové pravidlá).

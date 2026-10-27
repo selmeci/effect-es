@@ -34,9 +34,12 @@ Every requirement specified in the EARS spec must map to an explicit, behavior-s
 - **`WHILE <state>` (Pure Deciders):**
   - Boundary conditions for pure deciders (`*.decide`) MUST be tested across transition boundaries: `limit - 1`, `limit`, and `limit + 1`.
   - Decider tests MUST run with zero service layers (`R = never`), guaranteeing purity and determinism without mocks.
+  - Pure deciders (`*.decide`) and stateful reducers/projections MUST include Property-Based Tests (`it.effect.prop` / `it.prop`) over `Schema` arbitraries (via `effect/Arbitrary`), not just 1-2 hand-picked example inputs.
+  - Tests must be strong enough to kill boundary (`>=` vs `>`, `<=` vs `<`) and arithmetic (`+ 1` vs `- 1`) mutants in `harness mutate --strict` (`MutationCheck.decide`).
 
 ### 2. Silent-Pass & Vacuous Tests
 Flag any test that can pass without exercising real production logic:
+- **Example-Only Blind Spots & Reward Hacking:** Decider or projection tests that only test 1-2 hand-picked example inputs without property invariants, allowing boundary shifts (`>=` mutated to `>`) or off-by-one errors to survive mutation testing. Pure deciders and reducers must use `it.effect.prop` / `it.prop` over `Schema` arbitraries and kill all mutants under `harness mutate --strict`.
 - **Mock Over-Specification:** Mock Layers that stub return values matching expected outputs, allowing broken domain deciders or query logic to pass unnoticed.
 - **Vacuous Assertions:** Weak assertions such as `toBeDefined()`, `toBeTruthy()`, `expect(result).not.toBeNull()`, or checking array length without validating content properties.
 - **Unasserted Generator Steps:** Tests using `Effect.gen` that execute effects without asserting the outcome or without verifying state mutations.

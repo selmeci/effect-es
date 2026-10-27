@@ -605,7 +605,8 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
               testId: node.testId,
               testFile: node.testFile,
               testName: node.testName,
-              lastTreeHash: node.lastTreeHash
+              lastTreeHash: node.lastTreeHash,
+              isPropertyTest: node.isPropertyTest ?? false
             }
           })
         )

@@ -1,0 +1,228 @@
+import { execFileSync } from "node:child_process"
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join, relative } from "node:path"
+import { Effect } from "effect"
+
+export type MutantCategory =
+  | "boundary-operator"
+  | "equality-operator"
+  | "arithmetic-operator"
+
+export interface CodeMutant {
+  readonly id: string
+  readonly file: string
+  readonly line: number
+  readonly category: MutantCategory
+  readonly original: string
+  readonly replacement: string
+  readonly mutatedSource: string
+}
+
+export interface MutantOutcome {
+  readonly mutant: CodeMutant
+  readonly status: "killed" | "survived"
+}
+
+export interface MutationEvaluationInput {
+  readonly outcomes: ReadonlyArray<MutantOutcome>
+  readonly minScore?: number | undefined
+}
+
+export interface MutationSuiteReport {
+  readonly passed: boolean
+  readonly totalMutants: number
+  readonly killedCount: number
+  readonly survivedCount: number
+  readonly mutationScore: number
+  readonly survivedMutants: ReadonlyArray<CodeMutant>
+}
+
+const MUTATION_PATTERNS: ReadonlyArray<{
+  readonly original: string
+  readonly replacement: string
+  readonly category: MutantCategory
+}> = [
+  { original: ">=", replacement: ">", category: "boundary-operator" },
+  { original: "<=", replacement: "<", category: "boundary-operator" },
+  { original: "===", replacement: "!==", category: "equality-operator" },
+  { original: "!==", replacement: "===", category: "equality-operator" },
+  { original: "+ 1", replacement: "- 1", category: "arithmetic-operator" },
+  { original: "- 1", replacement: "+ 1", category: "arithmetic-operator" }
+]
+
+const shouldSkipLine = (trimmed: string): boolean => {
+  if (trimmed.length === 0) return true
+  if (
+    trimmed.startsWith("//") ||
+    trimmed.startsWith("/*") ||
+    trimmed.startsWith("*") ||
+    trimmed.startsWith("import ") ||
+    trimmed.startsWith("import\t") ||
+    trimmed.startsWith("export type ") ||
+    trimmed.startsWith("export type\t") ||
+    trimmed.startsWith("type ") ||
+    trimmed.startsWith("type\t") ||
+    trimmed.startsWith("interface ") ||
+    trimmed.startsWith("export interface ")
+  ) {
+    return true
+  }
+  return false
+}
+
+export const discoverDomainMutants = (
+  filePath: string,
+  sourceCode: string
+): ReadonlyArray<CodeMutant> => {
+  const mutants: Array<CodeMutant> = []
+  const newline = sourceCode.includes("\r\n") ? "\r\n" : "\n"
+  const lines = sourceCode.split(newline)
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const trimmed = line.trim()
+    if (shouldSkipLine(trimmed)) {
+      continue
+    }
+
+    const lineNo = i + 1
+
+    for (const pattern of MUTATION_PATTERNS) {
+      if (line.includes(pattern.original)) {
+        const mutatedLines = [...lines]
+        mutatedLines[i] = line.replace(pattern.original, pattern.replacement)
+        const mutatedSource = mutatedLines.join(newline)
+
+        mutants.push({
+          id: `${filePath}:${lineNo}:${pattern.original}->${pattern.replacement}`,
+          file: filePath,
+          line: lineNo,
+          category: pattern.category,
+          original: pattern.original,
+          replacement: pattern.replacement,
+          mutatedSource
+        })
+      }
+    }
+  }
+
+  return mutants
+}
+
+export const decideMutationReport = Effect.fn("MutationCheck.decide")(function* (
+  input: MutationEvaluationInput
+) {
+  yield* Effect.void
+
+  const totalMutants = input.outcomes.length
+  const killedCount = input.outcomes.filter((o) => o.status === "killed").length
+  const survivedMutants = input.outcomes
+    .filter((o) => o.status === "survived")
+    .map((o) => o.mutant)
+  const survivedCount = survivedMutants.length
+  const mutationScore = totalMutants === 0 ? 1 : killedCount / totalMutants
+  const minScore = input.minScore ?? 1
+  const passed = survivedCount === 0 && mutationScore >= minScore
+
+  return {
+    passed,
+    totalMutants,
+    killedCount,
+    survivedCount,
+    mutationScore,
+    survivedMutants
+  } satisfies MutationSuiteReport
+})
+
+export const evaluateMutationOutcomes = (
+  outcomes: ReadonlyArray<MutantOutcome>,
+  minScore?: number
+): MutationSuiteReport =>
+  Effect.runSync(decideMutationReport({ outcomes, minScore }))
+
+const findDomainFiles = (
+  repoRoot: string,
+  scope?: string
+): ReadonlyArray<{ readonly scope: string; readonly fullPath: string; readonly relFile: string }> => {
+  const results: Array<{ scope: string; fullPath: string; relFile: string }> = []
+  const libsDir = join(repoRoot, "libs")
+  if (!existsSync(libsDir)) return results
+
+  let cleanScope = scope
+  if (cleanScope) {
+    cleanScope = cleanScope.replace(/^@harness\//, "").replace(/-domain$/, "")
+  }
+
+  const scopes = cleanScope !== undefined ? [cleanScope] : readdirSync(libsDir)
+
+  for (const s of scopes) {
+    const srcDir = join(libsDir, s, "domain", "src")
+    if (!existsSync(srcDir)) continue
+
+    const walk = (dir: string) => {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(full)
+        } else if (
+          entry.isFile() &&
+          (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) &&
+          !entry.name.endsWith(".d.ts")
+        ) {
+          const relFile = relative(repoRoot, full).replace(/\\/g, "/")
+          results.push({ scope: s, fullPath: full, relFile })
+        }
+      }
+    }
+
+    walk(srcDir)
+  }
+
+  return results
+}
+
+export const runDomainMutationSuite = (
+  repoRoot: string,
+  options?: { readonly scope?: string | undefined }
+): MutationSuiteReport => {
+  const domainFiles = findDomainFiles(repoRoot, options?.scope)
+  const outcomes: Array<MutantOutcome> = []
+
+  for (const file of domainFiles) {
+    const originalContent = readFileSync(file.fullPath, "utf8")
+    const mutants = discoverDomainMutants(file.relFile, originalContent)
+    const pkgDir = join(repoRoot, "libs", file.scope, "domain")
+
+    for (const mutant of mutants) {
+      const outcome = Effect.runSync(
+        Effect.sync(() => {
+          writeFileSync(file.fullPath, mutant.mutatedSource, "utf8")
+        }).pipe(
+          Effect.andThen(
+            Effect.try(() => {
+              execFileSync("pnpm", ["test"], {
+                cwd: pkgDir,
+                stdio: "pipe",
+                env: { ...process.env, CI: "true" }
+              })
+            })
+          ),
+          Effect.match({
+            onFailure: (): "killed" => "killed",
+            onSuccess: (): "survived" => "survived"
+          }),
+          Effect.map((status): MutantOutcome => ({ mutant, status })),
+          Effect.ensuring(
+            Effect.sync(() => {
+              writeFileSync(file.fullPath, originalContent, "utf8")
+            })
+          )
+        )
+      )
+      outcomes.push(outcome)
+    }
+  }
+
+  return evaluateMutationOutcomes(outcomes)
+}
