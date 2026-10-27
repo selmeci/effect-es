@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { Effect, Option } from "effect"
 import * as Graph from "effect/Graph"
 import type { GovernanceDocStatus, HarnessGraph } from "@harness/graph"
+import { decideEarsSpecQuality } from "./ears-lint.js"
 
 export type GcFindingKind =
   | "unused-service"
@@ -13,6 +14,7 @@ export type GcFindingKind =
   | "untested-effect-fn"
   | "missing-decider-property-test"
   | "stale-doc-reference"
+  | "ears-spec-lint"
 
 export interface GcFinding {
   readonly kind: GcFindingKind
@@ -31,6 +33,7 @@ export interface GovernanceDocReference {
   readonly docPath: string
   readonly id: string
   readonly status: GovernanceDocStatus
+  readonly markdown?: string | undefined
   readonly enforcedByFiles?: ReadonlyArray<string> | undefined
   readonly existingFiles?: ReadonlyArray<string> | undefined
   readonly referencedSpans?: ReadonlyArray<string> | undefined
@@ -72,7 +75,8 @@ const IGNORED_UNTESTED_FNS = new Set([
   "Harness.routeStep",
   "Harness.proposeLearningAction",
   "Harness.checkPlanStepCoverage",
-  "Harness.triageFailure"
+  "Harness.triageFailure",
+  "EarsSpecLint.decide"
 ])
 
 export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
@@ -345,6 +349,20 @@ export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
     }
   }
 
+  // 8. ears-spec-lint
+  for (const doc of input.governanceDocs ?? []) {
+    if (doc.markdown !== undefined && (doc.docPath.includes("/specs/") || doc.id.includes(":SPEC-"))) {
+      const lintReport = yield* decideEarsSpecQuality({ docPath: doc.docPath, markdown: doc.markdown })
+      for (const f of lintReport.findings) {
+        findings.push({
+          kind: "ears-spec-lint",
+          nodeId: doc.id,
+          message: `EARS spec "${doc.id}" (${doc.docPath}:${f.line}) [${f.kind}]: ${f.message}`
+        })
+      }
+    }
+  }
+
   return {
     clean: findings.length === 0,
     findings
@@ -475,10 +493,13 @@ export const parseGovernanceDocFrontmatter = (
   const referencedServices = lists.get("services")
   const referencedErrors = lists.get("errors")
 
+  const isEarsSpec = docPath.includes("/specs/") || id.includes(":SPEC-")
+
   return {
     docPath,
     id,
     status,
+    ...(isEarsSpec ? { markdown } : {}),
     ...(enforcedByFiles !== undefined ? { enforcedByFiles, existingFiles } : {}),
     ...(referencedSpans !== undefined ? { referencedSpans } : {}),
     ...(referencedServices !== undefined ? { referencedServices } : {}),
@@ -564,7 +585,14 @@ export const loadGovernanceDocsFromDisk = (
       )
 
       if (parsed !== null) {
-        results.push(parsed)
+        if (relDir.endsWith("/specs") || parsed.id.includes(":SPEC-")) {
+          results.push({
+            ...parsed,
+            markdown: content
+          })
+        } else {
+          results.push(parsed)
+        }
       }
     }
   }

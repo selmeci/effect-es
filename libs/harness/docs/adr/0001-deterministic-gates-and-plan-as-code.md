@@ -13,6 +13,7 @@ spans:
   - MigrationSafety.decide
   - MutationCheck.decide
   - LoopCircuitBreaker.decide
+  - EarsSpecLint.decide
 ---
 
 # harness:ADR-0001: Deterministic Gates and Compilable Plan-as-Code Skeletons Over Prose Plans

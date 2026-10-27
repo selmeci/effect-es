@@ -10,6 +10,7 @@ import {
   checkMigrationSqlSafety,
   checkSpanBudgets,
   classifyFileWrite,
+  decideEarsSpecQuality,
   decideGraphEntropy,
   decideLoopThrashing,
   decideMigrationSafety,
@@ -19,6 +20,7 @@ import {
   diffPlanAndImplGraphs,
   discoverDomainMutants,
   evaluateMutationOutcomes,
+  lintEarsSpecMarkdown,
   loadGovernanceDocsFromDisk,
   parseGovernanceDocFrontmatter,
   resolveHarnessStateDir,
@@ -1302,6 +1304,115 @@ status: accepted
         expect(oneSurvivedReport.mutationScore).toBe(0.5)
         expect(oneSurvivedReport.survivedMutants).toEqual([dummyMutant2])
       })
+    )
+  })
+
+  describe("decideEarsSpecQuality / lintEarsSpecMarkdown (EarsSpecLint.decide)", () => {
+    it("accepts a valid EARS spec with sequential areas, **Source:**, and valid REQ rows", () => {
+      const validMarkdown = `## Requirements
+
+### 1 · Photo Gallery Core
+**Source (API contract):** Defined in contract package.
+
+| ID | Pattern | Requirement | Effect Symbol | Verification |
+|---|---|---|---|---|
+| REQ-1.1 | Ubiquitous | The Photo schema **shall** validate all photo identifiers. | Photo | test |
+| REQ-1.2 | Event-driven | **When** a user requests a photo by ID, The PhotoService **shall** query the repository. | PhotoService.getPhoto | test |
+| REQ-1.3 | Unwanted behaviour | **If** photo is missing, **then** The PhotoService **shall** fail with NotFoundError. | NotFoundError | test |
+`
+      const report = lintEarsSpecMarkdown("docs/specs/valid.md", validMarkdown)
+      expect(report.clean).toBe(true)
+      expect(report.requirementCount).toBe(3)
+      expect(report.findings).toHaveLength(0)
+    })
+
+    it("rejects generic subject, weak modal, compound obligation, pattern mismatch, numbering gap, and forbidden column", () => {
+      // 1. Generic subject
+      const genericSubjMd = `## Requirements\n\n### 1 · Area\n**Source:** test\n\n| ID | Pattern | Requirement | Verification |\n|---|---|---|---|\n| REQ-1.1 | Ubiquitous | The system **shall** validate input. | test |\n`
+      const genericReport = lintEarsSpecMarkdown("docs/specs/test.md", genericSubjMd)
+      expect(genericReport.clean).toBe(false)
+      expect(genericReport.findings.some((f) => f.kind === "generic-subject")).toBe(true)
+
+      // 2. Weak modal
+      const weakModalMd = `## Requirements\n\n### 1 · Area\n**Source:** test\n\n| ID | Pattern | Requirement | Verification |\n|---|---|---|---|\n| REQ-1.1 | Ubiquitous | The PhotoService should validate input. | test |\n`
+      const weakReport = lintEarsSpecMarkdown("docs/specs/test.md", weakModalMd)
+      expect(weakReport.clean).toBe(false)
+      expect(weakReport.findings.some((f) => f.kind === "weak-modal")).toBe(true)
+
+      // 3. Compound obligation
+      const compoundMd = `## Requirements\n\n### 1 · Area\n**Source:** test\n\n| ID | Pattern | Requirement | Verification |\n|---|---|---|---|\n| REQ-1.1 | Ubiquitous | The PhotoService **shall** save the record **and shall** notify subscribers. | test |\n`
+      const compoundReport = lintEarsSpecMarkdown("docs/specs/test.md", compoundMd)
+      expect(compoundReport.clean).toBe(false)
+      expect(compoundReport.findings.some((f) => f.kind === "compound-obligation")).toBe(true)
+
+      // 4. Pattern mismatch
+      const patternMismatchMd = `## Requirements\n\n### 1 · Area\n**Source:** test\n\n| ID | Pattern | Requirement | Verification |\n|---|---|---|---|\n| REQ-1.1 | Event-driven | The PhotoService **shall** save the record immediately. | test |\n`
+      const mismatchReport = lintEarsSpecMarkdown("docs/specs/test.md", patternMismatchMd)
+      expect(mismatchReport.clean).toBe(false)
+      expect(mismatchReport.findings.some((f) => f.kind === "pattern-keyword-mismatch")).toBe(true)
+
+      // 5. Numbering gap
+      const gapMd = `## Requirements\n\n### 1 · Area\n**Source:** test\n\n| ID | Pattern | Requirement | Verification |\n|---|---|---|---|\n| REQ-1.1 | Ubiquitous | The PhotoService **shall** step 1. | test |\n| REQ-1.3 | Ubiquitous | The PhotoService **shall** step 3. | test |\n`
+      const gapReport = lintEarsSpecMarkdown("docs/specs/test.md", gapMd)
+      expect(gapReport.clean).toBe(false)
+      expect(gapReport.findings.some((f) => f.kind === "numbering-gap")).toBe(true)
+
+      // 6. Forbidden column
+      const forbiddenMd = `## Requirements\n\n### 1 · Area\n**Source:** test\n\n| ID | Status | Pattern | Requirement | Verification |\n|---|---|---|---|---|\n| REQ-1.1 | Done | Ubiquitous | The PhotoService **shall** step 1. | test |\n`
+      const forbiddenReport = lintEarsSpecMarkdown("docs/specs/test.md", forbiddenMd)
+      expect(forbiddenReport.clean).toBe(false)
+      expect(forbiddenReport.findings.some((f) => f.kind === "forbidden-column")).toBe(true)
+    })
+
+    it.effect("flags ears-spec-lint in decideGraphEntropy when governance doc has EARS violations", () =>
+      Effect.gen(function* () {
+        const graph = buildHarnessGraph({})
+        const report = yield* decideGraphEntropy({
+          graph,
+          governanceDocs: [
+            {
+              docPath: "libs/sample/docs/specs/2026-10-27-broken.md",
+              id: "sample:SPEC-BROKEN",
+              status: "accepted",
+              markdown: "No requirements table in this file."
+            }
+          ]
+        })
+        expect(report.clean).toBe(false)
+        const finding = report.findings.find((f) => f.kind === "ears-spec-lint")
+        expect(finding).toBeDefined()
+        expect(finding?.nodeId).toBe("sample:SPEC-BROKEN")
+        expect(finding?.message).toContain("no-requirements-table")
+      })
+    )
+
+    it.effect.prop(
+      "EarsSpecLint.decide: validates N generated requirements cleanly",
+      {
+        requirementCount: Schema.Int.check(
+          Schema.isBetween({ minimum: 1, maximum: 5 })
+        )
+      },
+      ({ requirementCount }) =>
+        Effect.gen(function* () {
+          const rows = Array.from(
+            { length: requirementCount },
+            (_, i) =>
+              `| REQ-1.${i + 1} | Ubiquitous | The Service${i + 1} **shall** execute step ${i + 1}. | test |`
+          ).join("\n")
+
+          const md = `## Requirements\n\n### 1 · Area\n**Source:** test source\n\n| ID | Pattern | Requirement | Verification |\n|---|---|---|---|\n${rows}\n`
+
+          const report = yield* decideEarsSpecQuality({
+            docPath: "docs/specs/generated.md",
+            markdown: md
+          })
+
+          expect(report.clean).toBe(true)
+          expect(report.requirementCount).toBe(requirementCount)
+          expect(report.requirements).toHaveLength(requirementCount)
+          expect(report.findings).toHaveLength(0)
+        })
     )
   })
 })

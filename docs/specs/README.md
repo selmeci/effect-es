@@ -46,6 +46,65 @@ errors:
 ---
 ```
 
+### 2.1 Kanonická Kostra Špecifikácie
+
+Každá EARS špecifikácia v `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` musí striktne dodržiavať nasledujúcu kanonickú štruktúru:
+
+```markdown
+## Context
+Dva odseky opisujúce súčasný stav, dôvod požiadavky a existujúci kontext grafu:
+- **Reused Contracts / Errors:** `<symboly z type:contract>`
+- **Reused Services:** `<Context.Service tagy z type:service>`
+- **New Capabilities Needed:** `<nové schémy, chyby alebo servisné metódy>`
+
+## Goal
+Jeden odsek definujúci, čo bude pravdivé o samotnom produkte po dokončení — nikdy nepopisuje dokument.
+
+## How to read the requirements
+Požiadavky dodržiavajú syntax EARS. Každá požiadavka je jedna veta s tučnými kľúčovými slovami (`When`, `While`, `If ... then`, `Where`) a modálnym slovesom `shall` alebo `shall not`.
+
+## Requirements
+
+### 1 · <Názov oblasti>
+
+**Source (<pôvod>):** <prečo na tom záleží>.
+
+| ID | Pattern | Requirement | Effect Symbol | Verification |
+| --- | --- | --- | --- | --- |
+| REQ-1.1 | Event-driven | **When** a valid PhotoUpload payload is submitted, the Sample.uploadPhoto use-case **shall** store the photo and return PhotoMetadata. | Sample.uploadPhoto | UnitTest |
+| REQ-1.2 | State-driven | **While** currentCount is greater than or equal to maxAllowed, the AlbumQuota.decide decider **shall** return QuotaExceeded. | AlbumQuota.decide | PropertyTest |
+| REQ-1.3 | Unwanted behaviour | **If** the requested photoId is not present in PhotoRepo, **then** the Sample.getPhoto use-case **shall** fail with PhotoNotFoundError. | PhotoNotFoundError | UnitTest |
+
+## Assumptions
+* **REQ-1.1:** Predvolená maximálna veľkosť uploadu je 10MB; konfigurovateľná cez MaxUploadSizeConfig.
+
+## Out of scope
+* **Soft-delete retention policy.** Lehota premazania vymazaných fotografií. Rozhoduje: Produktový tím.
+
+## Known residual risks
+* Súbežné nahrávanie fotiek do rovnakého albumu sa spolieha na atomické transakcie Durable Object; vysoká súbežnosť na jeden album môže tvoriť rad v schránke DO aktéra.
+
+## Acceptance criteria
+* Všetky riadky požiadaviek prešli deklarovanou metódou verifikácie (`UnitTest`, `PropertyTest`, `TraceTest`).
+* Aktualizované dotknuté balíky Nx: `type:contract` -> `type:service` -> `type:domain` -> `type:infra` -> `scope:web`.
+* Frontmatter aktualizovaný na `status: accepted` po implementácii a overený cez `harness gc --strict`.
+```
+
+### 2.2 Deterministické Kontroly `EarsSpecLint.decide`
+
+Kvalita a formát špecifikácií nie sú ponechané na voľnú interpretáciu LLM, ale sú deterministicky validované čistým deciderom `EarsSpecLint.decide` v rámci `harness gc --strict`. Linter kontroluje 8 kľúčových invariantov:
+
+| Kontrola lintera | Význam a dôvod zlyhania | Spôsob nápravy |
+| :--- | :--- | :--- |
+| **`no-requirements-table`** | Sekcia oblasti požiadaviek (`### <N> · <Area>`) neobsahuje 5-stĺpcovú Markdown tabuľku. | Pridajte kanonickú tabuľku `\| ID \| Pattern \| Requirement \| Effect Symbol \| Verification \|`. |
+| **`id-format`** | Identifikátor požiadavky nezodpovedá formátu `REQ-<oblasť>.<index>` (napr. `REQ-1.1`). | Použite presný formát `REQ-X.Y` zhodný s číslom oblasti. |
+| **`numbering-gap`** | V číslovaní požiadaviek v rámci oblasti existuje medzera (napr. po `REQ-1.1` nasleduje `REQ-1.3`). | Použite striktne po sebe idúce číslovanie bez vynechaných čísel. |
+| **`generic-subject`** | Veta používa generický subjekt (`the system`, `the application`, `the service`). | Pomenujte konkrétny Effect use-case, decider, službu alebo Durable Object (`The Sample.uploadPhoto use-case`, `The AlbumQuota.decide decider`). |
+| **`compound-obligation`** | Veta spája dve nezávislé povinnosti pomocou spojky `and shall`. | Rozdeľte vetu na dve samostatné požiadavky (`REQ-1.2` a `REQ-1.3`). Ak ide len o negatívne preformulovanie (`and shall not return a photo`), druhú polovicu vypustite. |
+| **`pattern-keyword-mismatch`** | Chýba povinné tučné kľúčové slovo pre deklarovaný vzor (`**When**`, `**While**`, `**If** … **then**`, `**Where**`), alebo ubiquitous obsahuje podmienku. | Použite presné tučné kľúčové slovo zodpovedajúce vzoru v stĺpci `Pattern`. |
+| **`weak-modal`** | Veta používa slabé alebo neštandardné modálne sloveso (`should`, `must`, `will`, `can`, `needs to`). | Použite striktne `**shall**` alebo `**shall not**`. |
+| **`forbidden-column`** | Tabuľka obsahuje stĺpce stavu alebo dôkazov (`Status`, `Evidence`, `Test file`). | Odstráňte zakázané stĺpce. Stav patrí do git vetiev a `.harness/verify-stamp.json`, dôkazy do hrán grafu `ExercisesSpan`. |
+
 ---
 
 ## 3. Životný cyklus špecifikácie (3 fázy governance)
@@ -54,11 +113,11 @@ errors:
 
 ### Fáza 1: Vytvorenie návrhu (`specifying-ears-with-effect`)
 1. Agent preskúma existujúci kód pomocou MCP nástrojov (`harness_resolve`, `harness_callers`).
-2. Sformuluje 3-dielny EARS kontrakt:
-   - **1. Existing Graph Context:** Reused Contracts/Errors, Reused Services, New Capabilities.
-   - **2. EARS Requirements:** Klauzuly `UBIQUITOUS`, `WHEN` (happy path), `IF/THEN` (typed errors v `E`), `WHILE` (pure decider v `*.decide` s `R = never`), a `WHERE` (config/layer v `R`).
-   - **3. Affected Nx Packages:** Postupnosť vrstiev (`contract` $\rightarrow$ `service` $\rightarrow$ `domain` $\rightarrow$ `infra` $\rightarrow$ `web`).
-3. Po potvrdení používateľom agent zapíše súbor do `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (alebo `docs/specs/` pri cross-cutting zmenách) so statusom `status: proposed`. Tým je zaručené, že znenie požiadaviek sa nestratí pri zmenšení okna kontextu (`/compact`).
+2. Sformuluje kanonický EARS kontrakt:
+   - **Context & Goal:** Reused Contracts/Errors, Reused Services, New Capabilities, produktový cieľ.
+   - **EARS Requirements:** 5-stĺpcové tabuľky pod oblasťami `### <N> · <Area>` s pomenovanými Effect subjektmi a metódami verifikácie.
+   - **Assumptions, Out of scope, Risks & Acceptance criteria:** Dôsledné oddelenie potvrdených faktov od predvolených predpokladov a otvorených rozhodnutí.
+3. Po potvrdení používateľom agent zapíše súbor do `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (alebo `docs/specs/` pri cross-cutting zmenách) so statusom `status: proposed` a overí ho cez `harness gc --strict` (`EarsSpecLint.decide`). Tým je zaručené, že znenie požiadaviek sa nestratí pri zmenšení okna kontextu (`/compact`).
 
 ### Fáza 2: Plán a overenie grafu (`planning-effect-skeletons`)
 1. Agent vytvorí kompilovateľný skeleton pomocou `stub<A, E, R>(...args)` v príslušných balíkoch.
@@ -73,7 +132,7 @@ errors:
 2. Pred verifikáciou agent nastaví `status: accepted` v hlavičke špecifikácie.
 3. Spustia sa validačné mechanizmy:
    - **`@effect-ears-test-reviewer`:** Skontroluje špecifikáciu `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` a overí, že každá EARS klauzula (`WHEN`, `IF/THEN`, `WHILE`) má citlivé testovacie tvrdenie v testoch.
-   - **`harness gc --strict` (`stale-doc-reference`):** Overí, že všetky súbory v `enforced_by` a symboly v `spans`/`services`/`errors` existujú v grafe `HarnessGraph`.
+   - **`harness gc --strict` (`stale-doc-reference` a `EarsSpecLint.decide`):** Overí integritu špecifikácií cez `EarsSpecLint.decide` a potvrdí, že všetky súbory v `enforced_by` a symboly v `spans`/`services`/`errors` existujú v grafe `HarnessGraph`.
    - **`harness verify` & `harness done`:** Finálne deterministické zapečatenie úlohy.
 
 ---

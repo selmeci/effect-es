@@ -179,16 +179,16 @@ flowchart TD
 - **Postup:**
   1. Agent najskôr preverí existujúci graf volaním `harness_resolve` a `harness_callers` na relevantné symboly (`EffectFn`, `ServiceTag`, `TaggedError`). Tým sa predíde duplicite existujúcich zmlúv a služieb.
   2. Ak existujú nejasnosti, agent položí používateľovi **maximálne jednu cielenú otázku** (alebo použije interaktívny dotazník `ask_question`).
-  3. Výstupom je trojdielny formálny kontrakt podľa metodiky **EARS (Easy Approach to Requirements Syntax)**:
+  3. Výstupom je formálny kontrakt podľa metodiky **EARS (Easy Approach to Requirements Syntax)** v 5-stĺpcovej tabuľke (`| ID | Pattern | Requirement | Effect Symbol | Verification |`):
      - **Existujúci kontext grafu:** Reused Contracts / Errors, Reused Services, New Capabilities.
-     - **EARS požiadavky:**
-       - `WHEN <trigger>, THE SYSTEM SHALL <response>` $\rightarrow$ mapuje sa na vstupné Schémy a návratový typ úspechu `A` v `Effect<A, E, R>`.
-       - `IF <condition>, THEN THE SYSTEM SHALL <fail>` $\rightarrow$ mapuje sa na `Schema.TaggedErrorClass` a chybový kanál `E`.
-       - `WHILE <state>, THE SYSTEM SHALL <response>` $\rightarrow$ mapuje sa na čistý decider `Effect.fn("*.decide")` s `R = never` a stavovú službu v `R`.
-       - `WHERE <feature>, THE SYSTEM SHALL <response>` $\rightarrow$ mapuje sa na `Layer` a `Config` v parametri `R`.
+     - **EARS požiadavky s pomenovanými subjektmi (nikdy nie generický „the system“):**
+       - `WHEN <trigger>, the <UseCase> use-case SHALL <response>` $\rightarrow$ mapuje sa na vstupné Schémy a návratový typ úspechu `A` v `Effect<A, E, R>`.
+       - `IF <condition>, THEN the <UseCase> use-case SHALL fail with <TaggedError>` $\rightarrow$ mapuje sa na `Schema.TaggedErrorClass` a chybový kanál `E`.
+       - `WHILE <state>, the <decider> SHALL <response>` $\rightarrow$ mapuje sa na čistý decider `Effect.fn("*.decide")` s `R = never` a overenie cez `PropertyTest`.
+       - `WHERE <feature>, the <provider> SHALL <response>` $\rightarrow$ mapuje sa na `Layer` a `Config` v parametri `R`.
        - `UBIQUITOUS` $\rightarrow$ globálny invariant domény.
-      - **Dotknuté balíky Nx:** Zoznam zasiahnutých knižníc v poradí `contract` $\rightarrow$ `service` $\rightarrow$ `domain` $\rightarrow$ `infra` $\rightarrow$ `web`.
-   4. **Perzistencia špecifikácie (`libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md`):** Po schválení používateľom agent povinne uloží špecifikáciu do `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (napr. `libs/sample/docs/specs/...`, `libs/es/docs/specs/...`, s fallbackom na koreňové `docs/specs/` len pre prierezové monorepo zmeny) so štruktúrovaným YAML frontmatterom (`id: <scope>:SPEC-NNNN`, `title`, `status: proposed`, `date`, `enforced_by`, `spans`, `services`, `errors`). Tým je garantované, že formálna EARS zmluva o správaní prežije zhustenie kontextu (`/compact`) a slúži ako pevný základ pre nasledujúce fázy.
+     - **Dotknuté balíky Nx:** Zoznam zasiahnutých knižníc v poradí `contract` $\rightarrow$ `service` $\rightarrow$ `domain` $\rightarrow$ `infra` $\rightarrow$ `web`.
+  4. **Perzistencia a overenie špecifikácie (`libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md`):** Po schválení používateľom agent povinne uloží špecifikáciu do `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (napr. `libs/sample/docs/specs/...`, `libs/es/docs/specs/...`, s fallbackom na koreňové `docs/specs/` len pre prierezové monorepo zmeny) so štruktúrovaným YAML frontmatterom (`id: <scope>:SPEC-NNNN`, `title`, `status: proposed`, `date`, `enforced_by`, `spans`, `services`, `errors`). Správnosť formátu a pravidiel EARS okamžite deterministicky overí čistý decider `EarsSpecLint.decide` v rámci `harness gc --strict`. Tým je garantované, že formálna EARS zmluva o správaní prežije zhustenie kontextu (`/compact`) a slúži ako pevný základ pre nasledujúce fázy.
 
 ---
 
@@ -824,14 +824,15 @@ Harness MVP v2 zavádza systém **Živej, Strojovo Overiteľnej Architektonickej
   - Z uzla `EarsSpec` smerujú hrany `SpecifiesSymbol` priamo na dotknuté uzly `EffectFn`, `ServiceTag` a `TaggedError` naprieč vetvami `plan/current`, `impl/current` aj `main`.
   - Agenti dopytujú špecifikujúce požiadavky cez MCP: `harness_callers("<ServiceOrFn>")` vráti hranu `SpecifiesSymbol` a uzol `EarsSpec`, a `harness_callees("<scope>:SPEC-NNNN")` vráti všetky špecifikované symboly.
 - **Perzistentná Zmluva:** EARS požiadavky (`UBIQUITOUS`, `WHEN`, `IF/THEN`, `WHILE`, `WHERE`) uložené v špecifikáciách prežijú zhustenie kontextového okna (`/compact`) LLM. Slúžia ako autoritatívny zdroj pravdy pre `@effect-ears-test-reviewer`.
+- **Deterministická validácia formátu (`EarsSpecLint.decide` v `harness gc --strict`):** Každá EARS špecifikácia je automaticky kontrolovaná čistým deciderom `EarsSpecLint.decide` voči 8 pravidlám integrity (`no-requirements-table`, `id-format`, `numbering-gap`, `generic-subject`, `compound-obligation`, `pattern-keyword-mismatch`, `weak-modal`, `forbidden-column`). Tým je zaistené, že požiadavky majú pomenované Effect subjekty, presné EARS kľúčové slová a neobsahujú zastarávajúce stĺpce stavu a dôkazov.
 - **Topologický Záznam:** Po úspešnom `harness plan-check` agent do špecifikácie pripojí kompilovaný Mermaid diagram závislostí a výstup Pre-Implementation Adversarial Plan Lens auditu.
 
 #### 3. Dvojstupňové Deterministické Brány prepojenia Špecifikácií s Kódom
 1. **Spec $\rightarrow$ Plan Brána (`unmapped-spec-symbol` v `harness plan-check`):**
    - Už vo fáze plánovania, keď má špecifikácia stav `status: proposed`, brána `harness plan-check` (`checkEffectGraph`) striktne overuje, že každý `span`, `service` a `error` deklarovaný vo frontmatteri EARS špecifikácie reálne existuje ako uzol v grafe skeletonu (`stub<A, E, R>()`).
    - Ak agent deklaroval span `Sample.deletePhoto`, no v `.ts` skeletone ho zabudol vytvoriť alebo nazval inak, `checkEffectGraph` zlyhá s chybou `unmapped-spec-symbol`.
-2. **Plan $\rightarrow$ Impl Brána (`diffHarnessGraphs` v `harness done` + `stale-doc-reference` v `harness gc --strict`):**
-   - Po implementácii a nastavení `status: accepted` príkaz `harness gc --strict` cez pravidlo **`stale-doc-reference`** overí existenciu súborov v `enforced_by` a prítomnosť všetkých symbolov v produkčnom kóde.
+2. **Plan $\rightarrow$ Impl Brána (`diffHarnessGraphs` v `harness done` + `stale-doc-reference` a `EarsSpecLint.decide` v `harness gc --strict`):**
+   - Po implementácii a nastavení `status: accepted` príkaz `harness gc --strict` cez pravidlá **`stale-doc-reference`** a **`EarsSpecLint.decide`** overí platnosť odkazov, absenciu zastaraných symbolov a štrukturálnu integritu požiadaviek.
    - Následne `harness done` cez **`diffHarnessGraphs`** (porovnanie vetiev `plan/current` a `impl/current`) garantuje, že implementácia nevynechala žiadnu funkciu, službu ani chybový kanál z overeného plánu.
 
 ### 6.8 Property-Based Testing (`it.effect.prop` + `effect/Arbitrary`) a Cielený AST Mutation Testing (`MutationCheck.decide` / `harness mutate`) — Ochrana proti Test Reward Hackingu

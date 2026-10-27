@@ -10,4 +10,4 @@ export * from "./span-budget.js"
 export * from "./worktree.js"
 export * from "./migration-check.js"
 export * from "./mutation-check.js"
-
+export * from "./ears-lint.js"
