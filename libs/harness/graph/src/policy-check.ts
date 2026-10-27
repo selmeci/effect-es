@@ -2,11 +2,13 @@ import { Option } from "effect"
 import * as Graph from "effect/Graph"
 import { renderMermaid } from "./graph-engine.js"
 import {
+  type EarsSpecNode,
   type EffectFnNode,
   getNodeKey,
   type HarnessGraph,
   type HarnessNode,
-  type ServiceTagNode
+  type ServiceTagNode,
+  type TaggedErrorNode
 } from "./model.js"
 
 export interface GraphPolicyViolation {
@@ -15,6 +17,7 @@ export interface GraphPolicyViolation {
     | "domain-requires-cloud-binding"
     | "layer-cycle"
     | "impure-decider"
+    | "unmapped-spec-symbol"
   readonly message: string
   readonly path: ReadonlyArray<string>
 }
@@ -36,17 +39,25 @@ export const checkEffectGraph = (harnessGraph: HarnessGraph): CheckEffectGraphRe
   const violations: Array<GraphPolicyViolation> = []
 
   const domainFns: Array<{ readonly index: Graph.NodeIndex; readonly node: EffectFnNode }> = []
+  const allFns: Array<EffectFnNode> = []
+  const allServices: Array<ServiceTagNode> = []
+  const allErrors: Array<TaggedErrorNode> = []
+  const earsSpecs: Array<EarsSpecNode> = []
   const forbiddenServices: Array<{
     readonly index: Graph.NodeIndex
     readonly node: ServiceTagNode
     readonly rule: "domain-requires-infra" | "domain-requires-cloud-binding"
   }> = []
 
-  // 1. Collect domain functions and forbidden services
+  // 1. Collect domain functions, forbidden services, all symbols, and EARS specs
   for (const [idx, node] of Graph.nodes(harnessGraph.graph)) {
-    if (node._tag === "EffectFn" && node.packageTag === "domain") {
-      domainFns.push({ index: idx, node })
+    if (node._tag === "EffectFn") {
+      allFns.push(node)
+      if (node.packageTag === "domain") {
+        domainFns.push({ index: idx, node })
+      }
     } else if (node._tag === "ServiceTag") {
+      allServices.push(node)
       if (node.packageTag === "infra") {
         forbiddenServices.push({
           index: idx,
@@ -60,6 +71,10 @@ export const checkEffectGraph = (harnessGraph: HarnessGraph): CheckEffectGraphRe
           rule: "domain-requires-cloud-binding"
         })
       }
+    } else if (node._tag === "TaggedError") {
+      allErrors.push(node)
+    } else if (node._tag === "EarsSpec") {
+      earsSpecs.push(node)
     }
   }
 
@@ -145,6 +160,50 @@ export const checkEffectGraph = (harnessGraph: HarnessGraph): CheckEffectGraphRe
       message: `Layer dependency cycle detected: ${path.join(" -> ")}`,
       path
     })
+  }
+
+  // Rule 4: unmapped-spec-symbol (every proposed or accepted EarsSpec must map all its declared spans, services, and errors to nodes in the graph via SpecifiesSymbol edges)
+  for (const node of earsSpecs) {
+    if (node.status !== "proposed" && node.status !== "accepted") {
+      continue
+    }
+
+    for (const span of node.referencedSpans) {
+      const exists = allFns.some(
+        (fn) => fn.spanName === span || fn.qualname === span || fn.qualname.endsWith(`#${span}`)
+      )
+      if (!exists) {
+        violations.push({
+          rule: "unmapped-spec-symbol",
+          message: `EARS Spec '${node.id}' (${node.path}) declares EffectFn span '${span}', which is missing from the graph`,
+          path: [node.id, span]
+        })
+      }
+    }
+
+    for (const svc of node.referencedServices) {
+      const exists = allServices.some(
+        (s) => s.tagId === svc || s.name === svc || s.tagId.endsWith(`#${svc}`)
+      )
+      if (!exists) {
+        violations.push({
+          rule: "unmapped-spec-symbol",
+          message: `EARS Spec '${node.id}' (${node.path}) declares ServiceTag '${svc}', which is missing from the graph`,
+          path: [node.id, svc]
+        })
+      }
+    }
+
+    for (const err of node.referencedErrors) {
+      const exists = allErrors.some((e) => e.errorTag === err)
+      if (!exists) {
+        violations.push({
+          rule: "unmapped-spec-symbol",
+          message: `EARS Spec '${node.id}' (${node.path}) declares TaggedError '${err}', which is missing from the graph`,
+          path: [node.id, err]
+        })
+      }
+    }
   }
 
   const mermaid = renderMermaid(harnessGraph)

@@ -1283,9 +1283,9 @@
       <div class="card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Nx Taxonómia &amp; 4 Pravidlá effect-graph:check</h2>
+            <h2 class="card-title">Nx Taxonómia &amp; Pravidlá effect-graph:check (Vrátane EARS &amp; ADR)</h2>
             <p class="card-subtitle">
-              Sledujte povolené toky závislostí medzi vrstvami a interaktívne simulujte 4 pravidlá architektonických brán.
+              Sledujte povolené toky závislostí medzi vrstvami a interaktívne simulujte 5 pravidiel architektonických brán vrátane mapovania EARS špecifikácií (<code>EarsSpec -&gt; SpecifiesSymbol</code>) a ADR (<code>AdrDoc -&gt; GovernsSymbol</code>) na uzly kódu v Omnigraphe.
             </p>
           </div>
         </div>
@@ -1370,6 +1370,9 @@
 
               <!-- Rule 4: layer-cycle -->
               <path id="edge-rule-4" d="M 430 310 Q 500 370 560 250" fill="none" stroke="#ef4444" marker-end="url(#arrow-error)" class="arch-edge" style="display: none;"/>
+
+              <!-- Rule 5: unmapped-spec-symbol (EarsSpec -> SpecifiesSymbol -> Target) -->
+              <path id="edge-rule-5" d="M 170 250 Q 220 340 270 320" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#arrow-error)" class="arch-edge" style="display: none;"/>
             </svg>
           </div>
 
@@ -1402,6 +1405,11 @@
             <button class="rule-btn" data-rule="rule-layer-cycle">
               <div class="rule-btn-title"><span>🚫</span> layer-cycle</div>
               <div class="rule-btn-desc">Detekcia cyklických závislostí vrstiev cez Graph.findCycle.</div>
+            </button>
+
+            <button class="rule-btn" data-rule="rule-unmapped-spec">
+              <div class="rule-btn-title"><span>🚫</span> unmapped-spec-symbol</div>
+              <div class="rule-btn-desc">EarsSpec -&gt; SpecifiesSymbol: každý span/service/error v spec musí existovať v skeletone.</div>
             </button>
           </div>
         </div>
@@ -1458,7 +1466,7 @@
         <!-- Panel 1: harness gc -->
         <div id="quality-view-gc" class="quality-subtab-content">
           <div style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
-            Príkaz <code>harness gc --strict</code> spúšťa čistú rozhodovaciu funkciu <code>GraphGc.decide</code> nad celým <code>HarnessGraph</code>. Odhaľuje mŕtvy kód, neotestované funkcie (<code>untested-effect-fn</code>) a nepoužité či neposkytnuté služby pred <code>verify</code> a <code>done</code>.
+            Príkaz <code>harness gc --strict</code> spúšťa čistú rozhodovaciu funkciu <code>GraphGc.decide</code> nad celým <code>HarnessGraph</code>. Odhaľuje mŕtvy kód, neotestované funkcie (<code>untested-effect-fn</code>), nepoužité či neposkytnuté služby a zastarané referencie v dokumentácii (<code>stale-doc-reference</code> v <code>libs/&lt;scope&gt;/docs/{adr,specs}/*.md</code> a <code>docs/{adr,specs}/*.md</code>) pred <code>verify</code> a <code>done</code>.
           </div>
 
           <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
@@ -1479,6 +1487,9 @@
             </button>
             <button class="gc-pill scenario-pill" data-gc-scenario="missing-pattern-doc">
               <span>⚠️</span> missing-pattern-doc
+            </button>
+            <button class="gc-pill scenario-pill" data-gc-scenario="stale-doc-reference">
+              <span>⚠️</span> stale-doc-reference
             </button>
           </div>
 
@@ -1938,11 +1949,11 @@ expect(violations).toHaveLength(0);</code></pre>
         happy: {
           status: "PASS",
           badgeClass: "badge-pass",
-          scenarioTitle: "Happy Path: Presné zmapovanie EARS vzorov na Effect",
+          scenarioTitle: "Happy Path: Presné zmapovanie EARS vzorov na Effect a uloženie libs/<scope>/docs/specs/",
           who: "Vývojár v chate zadá požiadavky na novú funkcionalitu (alebo plánovací agent vygeneruje prvotný draft).",
           input: 'EARS klauzuly:\n- WHEN user deletes photo by ID, THE SYSTEM SHALL delete record and decrement album count by 1.\n- IF photo not found, THEN THE SYSTEM SHALL fail with PhotoNotFoundError.\n- WHILE album count is 0, THE SYSTEM SHALL prevent count from becoming negative.',
-          underTheHood: 'Skill `specifying-ears-with-effect` analyzuje klauzuly a priradí ich k Effect blokom:\n- WHEN/UBIQUITOUS -> Schema.Struct v type:contract & kanál A\n- IF/THEN -> Schema.TaggedErrorClass pre kanál E\n- WHILE -> pure .decide funkcia s R = never\n- WHERE -> Context.Service v R.',
-          output: 'Štruktúrovaná tabuľka EARS-to-Effect mapping, pripravené podpisy use-cases. Žiadne I/O v špecifikácii.\nExit kód: 0 (PASS)',
+          underTheHood: 'Skill `specifying-ears-with-effect` analyzuje klauzuly a priradí ich k Effect blokom:\n- WHEN/UBIQUITOUS -> Schema.Struct v type:contract & kanál A\n- IF/THEN -> Schema.TaggedErrorClass pre kanál E\n- WHILE -> pure .decide funkcia s R = never\n- WHERE -> Context.Service v R.\nPo potvrdení zapíše požiadavky do `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (`status: proposed`, so scoped `id: <scope>:SPEC-NNNN`), čím ich chráni pred zhustením kontextu (/compact) a pripravuje na neskoršiu kontrolu `stale-doc-reference` v `harness gc --strict`.',
+          output: 'Štruktúrovaná tabuľka EARS-to-Effect mapping, vytvorený súbor `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` so statusom proposed. Žiadne I/O v špecifikácii.\nExit kód: 0 (PASS)',
           next: 'Prechod do fázy 2: Vytvorenie typovo skontrolovanej kostry pomocou stub<A,E,R>(...args).'
         },
         failure: {
@@ -1973,10 +1984,10 @@ expect(violations).toHaveLength(0);</code></pre>
         happy: {
           status: "PASS",
           badgeClass: "badge-pass",
-          scenarioTitle: "Happy Path: Typovo skontrolovaná kostra so stub<A,E,R>",
+          scenarioTitle: "Happy Path: Typovo skontrolovaná kostra so stub<A,E,R> a záznam ADR",
           who: "Plánovací agent v skills/planning-effect-skeletons vytvorí skeleton use-case súborov.",
           input: 'Súbor libs/sample/domain/src/cart.ts:\nexport const checkout = Effect.fn("Cart.checkout")(function* (input: CheckoutInput) {\n  return yield* stub<Receipt, OutOfStockError | PaymentError, InventoryRepo | PaymentService>(input)\n})',
-          underTheHood: '1. MCP `harness_route` (alebo `harness route "<krok>"`) zavolá lokálny model `clef-flash` (`IdiomRouterV1`), ktorý priradí každému kroku plánu príslušný vzor z `agent-patterns/*.md` (napr. `d1-repository.md`, `httpapi.md`, `tagged-errors.md`).\n2. Agent zapíše kostru cez `stub<A, E, R>(...args)` z `@harness/gates`, ktorá zachováva presné typy A, E, R pre TypeScript a oxlint.',
+          underTheHood: '1. MCP `harness_route` (alebo `harness route "<krok>"`) zavolá lokálny model `clef-flash` (`IdiomRouterV1`), ktorý priradí každému kroku plánu príslušný vzor z `agent-patterns/*.md` (napr. `d1-repository.md`, `httpapi.md`, `tagged-errors.md`).\n2. Agent zapíše kostru cez `stub<A, E, R>(...args)` z `@harness/gates`, ktorá zachováva presné typy A, E, R pre TypeScript a oxlint.\n3. Ak plán obsahuje netriviálne architektonické kompromisy so zamietnutými alternatívami, zapíše sa ADR do `libs/<scope>/docs/adr/NNNN-<slug>.md` (alebo `docs/adr/`), chránené pred driftom cez `stale-doc-reference`.',
           output: 'Kompilátor TypeScriptu overí konzistenciu rozhraní naprieč balíkmi contract, service a domain. Žiadne nepoužité premenné.\nExit kód: 0 (PASS)',
           next: 'Spustenie fázy 3: Validácia plánu a vytvorenie vetvy plan/task cez `harness plan-check`.'
         },
@@ -2483,7 +2494,7 @@ expect(violations).toHaveLength(0);</code></pre>
     }
     simulateGuard();
 
-    // --- SECTION 3: GRAPH & 4 RULES LOGIC ---
+    // --- SECTION 3: GRAPH & 5 RULES LOGIC (Vrátane EARS & ADR) ---
     const ruleButtons = document.querySelectorAll(".rule-btn");
     const ruleDetailTitle = document.getElementById("ruleDetailTitle");
     const ruleDetailBadge = document.getElementById("ruleDetailBadge");
@@ -2495,13 +2506,14 @@ expect(violations).toHaveLength(0);</code></pre>
     const edgeRule2 = document.getElementById("edge-rule-2");
     const edgeRule3 = document.getElementById("edge-rule-3");
     const edgeRule4 = document.getElementById("edge-rule-4");
+    const edgeRule5 = document.getElementById("edge-rule-5");
 
     const rulesData = {
       "rule-normal": {
         title: "Normálny stav (Čistá architektúra)",
         badge: "VALID",
         badgeClass: "badge-pass",
-        desc: "Všetky vrstvy rešpektujú smer závislostí: contract <- service <- domain <- infra <- app. Web UI importuje iba contract.",
+        desc: "Všetky vrstvy rešpektujú smer závislostí: contract <- service <- domain <- infra <- app. Web UI importuje iba contract. EARS špecifikácie (EarsSpec -> SpecifiesSymbol) a ADR (AdrDoc -> GovernsSymbol) mapujú na platné uzly kódu.",
         output: "✔ checkEffectGraph: 0 violations found.\n✔ Mermaid diagram vygenerovaný na stdout.\n✔ Omnigraph snapshot uložený do .harness/graph-snapshot.json",
         fix: "Dodržiavajte zásadu, že doménová logika v `type:domain` je čistá bez vedľajších I/O efektov a závisí výlučne na abstrakciách `Context.Service`.",
         edges: []
@@ -2541,6 +2553,15 @@ expect(violations).toHaveLength(0);</code></pre>
         output: "✖ checkEffectGraph zlyhal:\n[layer-cycle] Layer dependency cycle detected: ServiceLayerA -> ServiceB -> ServiceLayerB -> ServiceA\nExit kód: 1",
         fix: "Rozbite cyklus rozdelením príliš širokých služieb na menšie jednotky s jedinou zodpovednosťou, alebo zaveďte samostatnú vrstvu spájajúcu obe závislosti.",
         edges: [edgeRule4]
+      },
+      "rule-unmapped-spec": {
+        title: "Pravidlo: unmapped-spec-symbol (EarsSpec -> SpecifiesSymbol)",
+        badge: "VIOLATION",
+        badgeClass: "badge-block",
+        desc: "Každý span, service a error deklarovaný v YAML frontmatteri EARS špecifikácie (uzol EarsSpec) musí existovať ako platný uzol v skeleton grafe (SpecifiesSymbol hrana) už počas harness plan-check.",
+        output: "✖ checkEffectGraph zlyhal:\n[unmapped-spec-symbol] Spec 'sample:SPEC-0001' declares span 'Sample.deletePhoto' but no matching EffectFn was found in workspace graph.\nExit kód: 1",
+        fix: "Pridajte chýbajúcu kostru funkcie, služby alebo chyby pomocou stub<A,E,R>() v príslušnom .ts súbore, alebo opravte názov spanu/servisu v YAML frontmatteri špecifikácie.",
+        edges: [edgeRule5]
       }
     };
 
@@ -2559,9 +2580,13 @@ expect(violations).toHaveLength(0);</code></pre>
         ruleDetailFix.textContent = data.fix;
 
         // Reset all violation edges
-        [edgeRule1, edgeRule2, edgeRule3, edgeRule4].forEach(e => e.style.display = "none");
+        [edgeRule1, edgeRule2, edgeRule3, edgeRule4, edgeRule5].forEach(e => {
+          if (e) e.style.display = "none";
+        });
         // Show active violation edges
-        data.edges.forEach(e => e.style.display = "block");
+        data.edges.forEach(e => {
+          if (e) e.style.display = "block";
+        });
       });
     });
 
@@ -2676,6 +2701,22 @@ expect(violations).toHaveLength(0);</code></pre>
           }]
         }, null, 2),
         fix: "Vytvorte súbor agent-patterns/durable-object-state.md s 50-80 riadkovým predpisom alebo spustite harness learn."
+      },
+      "stale-doc-reference": {
+        title: "Zastaraný odkaz v dokumentácii: libs/<scope>/docs/{adr,specs}/*.md",
+        badgeClass: "badge badge-block",
+        badgeText: "CLEAN: FALSE",
+        desc: "Akceptovaný dokument (ADR alebo EARS spec) odkazuje na súbor v enforced_by alebo symbol (span/service/error), ktorý v grafe neexistuje.",
+        exit: "exitCode: 1",
+        output: JSON.stringify({
+          clean: false,
+          findings: [{
+            kind: "stale-doc-reference",
+            nodeId: "libs/sample/docs/adr/0001-cloudflare-d1-do-sqlite-and-traceparent-boundaries.md",
+            message: "Referenced service 'OldAlbumCounter' in libs/sample/docs/adr/0001-cloudflare-d1-do-sqlite-and-traceparent-boundaries.md does not exist in workspace HarnessGraph."
+          }]
+        }, null, 2),
+        fix: "Aktualizujte frontmatter v libs/<scope>/docs/{adr,specs}/ alebo docs/{adr,specs}/ tak, aby zodpovedal existujúcim súborom a symbolom, alebo obnovte chýbajúci kód."
       }
     };
 

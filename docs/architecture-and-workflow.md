@@ -78,8 +78,9 @@ graph TD
    - Poskytuje testovací tracer `runWithTestTracer` a W3C `traceparent` koreláciu prepájajúcu `@effect/vitest` testy s reálnymi volaniami funkcií.
 4. **`libs/harness/graph`:**
    - Zostavuje typovo orientovaný funkcionálny graf závislostí pomocou `effect/Graph` a `ts-morph` (`extractWorkspaceTypeAwareGraph`).
-   - Validuje architektonické invarianty (`checkEffectGraph`).
-   - Zabezpečuje obojsmernú synchronizáciu s lokálnym Omnigraphom (`OmnigraphSync`, NDJSON export, zlučovanie vetiev `plan/current` a `impl/current`).
+   - Extrahuje architektonické dokumenty ako uzly `AdrDoc` a `EarsSpec` s hranami `GovernsSymbol` a `SpecifiesSymbol` smerujúcimi na symboly kódu (`EffectFn`, `ServiceTag`, `TaggedError`).
+   - Validuje architektonické invarianty (`checkEffectGraph` vrátane pravidiel `domain-requires-infra`, `domain-requires-cloud-binding`, `impure-decider`, `layer-cycle` a `unmapped-spec-symbol`).
+   - Zabezpečuje obojsmernú synchronizáciu s lokálnym Omnigraphom (`OmnigraphSync`, NDJSON export, zlučovanie vetiev `plan/current` a `impl/current` do `main`).
    - Obsahuje autorizačné pravidlá Cedar (`policies.cedar`).
 5. **`apps/harness-cli`:**
    - Centrálny vstupný bod pre nástroje agentov a automatizačné háky (hooks).
@@ -186,13 +187,14 @@ flowchart TD
        - `WHILE <state>, THE SYSTEM SHALL <response>` $\rightarrow$ mapuje sa na čistý decider `Effect.fn("*.decide")` s `R = never` a stavovú službu v `R`.
        - `WHERE <feature>, THE SYSTEM SHALL <response>` $\rightarrow$ mapuje sa na `Layer` a `Config` v parametri `R`.
        - `UBIQUITOUS` $\rightarrow$ globálny invariant domény.
-     - **Dotknuté balíky Nx:** Zoznam zasiahnutých knižníc v poradí `contract` $\rightarrow$ `service` $\rightarrow$ `domain` $\rightarrow$ `infra` $\rightarrow$ `web`.
+      - **Dotknuté balíky Nx:** Zoznam zasiahnutých knižníc v poradí `contract` $\rightarrow$ `service` $\rightarrow$ `domain` $\rightarrow$ `infra` $\rightarrow$ `web`.
+   4. **Perzistencia špecifikácie (`libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md`):** Po schválení používateľom agent povinne uloží špecifikáciu do `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (napr. `libs/sample/docs/specs/...`, `libs/es/docs/specs/...`, s fallbackom na koreňové `docs/specs/` len pre prierezové monorepo zmeny) so štruktúrovaným YAML frontmatterom (`id: <scope>:SPEC-NNNN`, `title`, `status: proposed`, `date`, `enforced_by`, `spans`, `services`, `errors`). Tým je garantované, že formálna EARS zmluva o správaní prežije zhustenie kontextu (`/compact`) a slúži ako pevný základ pre nasledujúce fázy.
 
 ---
 
 ### 2.3 Krok 2: `planning-effect-skeletons` (Plan-as-Code so `stub<A, E, R>()`)
 
-- **Vstup:** Používateľom schválený trojdielny EARS kontrakt.
+- **Vstup:** Používateľom schválený trojdielny EARS kontrakt zaznamenaný v `libs/<scope>/docs/specs/` (alebo `docs/specs/`).
 - **Nástroje:** MCP / CLI nástroj `harness_route` pre nájdenie relevantného vzoru v `agent-patterns/*.md`.
 - **Postup:**
   - V tomto systéme **plán JE kompilovateľný kód**. Nevytvárajú sa žiadne rozsiahle textové `.md` dokumenty s neoverenými ukážkami kódu.
@@ -230,14 +232,15 @@ export const deletePhoto = Effect.fn("Sample.deletePhoto")(function* (id: number
 - **Čo brána vykonáva:**
   1. Spustí `pnpm nx affected -t typecheck lint` s nastavenou premennou prostredia `HARNESS_PLAN_CHECK=1` (počas plan-checku je volanie `stub()` legálne).
   2. Spustí `buildWorkspaceFnIndex` cez `@ast-grep/napi` a overí, že každý `Effect.fn` má v celom repozitári **globálne unikátny názov spanu**.
-  3. Spustí `extractWorkspaceTypeAwareGraph` (`ts-morph`) a zostaví graf volaní a závislostí.
-  4. Spustí `checkEffectGraph` a overí 4 kľúčové invarianty:
+  3. Spustí `extractWorkspaceTypeAwareGraph` (`ts-morph`) a zostaví graf volaní a závislostí vrátane uzlov `AdrDoc` a `EarsSpec` s hranami `GovernsSymbol` a `SpecifiesSymbol`.
+  4. Spustí `checkEffectGraph` a overí 5 kľúčových invariantov:
      - `domain-requires-infra`: Doménová funkcia nesmie závisieť od infračervenej služby.
      - `domain-requires-cloud-binding`: Doménová funkcia nesmie priamo viazať cloudové služby (`Cloudflare`, `Alchemy`, `Drizzle`).
      - `impure-decider`: Funkcia s príponou `.decide` v `type:domain` nesmie vyžadovať žiadnu službu (`RequiresService` hrana je zakázaná, vyžaduje sa `R = never`).
      - `layer-cycle`: Detekcia cyklických závislostí medzi vrstvami pomocou `Graph.findCycle`.
+     - `unmapped-spec-symbol`: Overenie, že každý span, servis a error deklarovaný v YAML frontmatteri EARS špecifikácie (aj so statusom `status: proposed`) existuje ako uzol v grafe skeletonu (`stub<A, E, R>()`).
 - **Výsledok:**
-  - `exit 0`: Vytlačí vizuálny Mermaid diagram do konzoly, uloží snímku `.harness/plan-graph-snapshot.json` a zapíše vetvu `plan/current` do lokálneho Omnigraphu.
+  - `exit 0`: Vytlačí vizuálny Mermaid diagram do konzoly, uloží snímku `.harness/plan-graph-snapshot.json` a zapíše vetvu `plan/current` do lokálneho Omnigraphu. Agent **aktualizuje súbor `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md`** (alebo `docs/specs/`) (doplní overený Mermaid diagram topológie a checklist Pre-Implementation Adversarial Plan Lens) a v prípade prijatia dôležitých architektonických kompromisov zaznamená záznam v `libs/<scope>/docs/adr/NNNN-<slug>.md` (so scoped `id: <scope>:ADR-NNNN`, alebo v `docs/adr/` pre celo-monorepové rozhodnutia).
   - `exit 1`: Zastavenie s chybovým hlásením. Agent sa musí vrátiť do Kroku 2 a opraviť typy alebo porušenie politík.
 
 ---
@@ -272,6 +275,9 @@ Keď je plán uzamknutý v grafe, nastáva implementácia:
      - Simuluje `drizzle-kit generate` voči dočasnej zložke a overuje SQL cez `MigrationSafety.decide`.
      - Deteguje deštruktívne SQL (`DROP TABLE`, `DROP COLUMN`, `DROP INDEX`), SQLite table rebuildy (`__new_<table_name>`) a `ALTER TABLE ... ADD COLUMN ... NOT NULL` bez `DEFAULT`.
      - Ak nová migrácia obsahuje takéto zmeny, skript skončí s **`exit 2` a výstupom `ESCALATE`**.
+3. **Akceptácia špecifikácie a `harness gc --strict` (`stale-doc-reference`):**
+   - Po dokončení implementácie a schválení špecializovanými recenzentmi (Multi-Lens Review) agent aktualizuje frontmatter `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (alebo `docs/specs/`) z `status: proposed` na `status: accepted`.
+   - Následne spustí `harness gc --strict`, kde čistý decider `GraphGc.decide` overí pravidlo `stale-doc-reference`: potvrdí, že všetky súbory v `enforced_by` a všetky symboly v `spans`/`services`/`errors` na akceptovaných špecifikáciách a ADR záznamoch (v `libs/*/docs/{adr,specs}`, `apps/*/docs/{adr,specs}` aj `docs/{adr,specs}`) reálne existujú v kóde a v grafe `HarnessGraph`.
 
 ---
 
@@ -787,6 +793,40 @@ Výber šošoviek je riadený signálmi — presným zoznamom balíkov a schopno
 
 Okrem fázy implementácie sa **Adversarial & Feasibility Lens** zapája už v Krok 2/3 (`planning-effect-skeletons`), kde po úspešnom `harness plan-check` audituje graf skeletonu pred pridelením práce implementátorom (idempotency kľúče v kontraktoch, reprezentácia čiastočných zlyhaní v `E` a `R`, čistota deciderov).
 
+### 6.7 Živá Architektonická Dokumentácia (`libs/<scope>/docs/{adr,specs}/` & `docs/{adr,specs}/`) a ochrana proti zastarávaniu (`stale-doc-reference` v `harness gc --strict`)
+
+Architektonická dokumentácia v autonómnych systémoch často zlyháva na dvoch protikladných problémoch: buď chýba kontext za netriviálnymi rozhodnutiami (a agenti opakovane navrhujú zamietnuté vzory), alebo dokumentácia vznikne ako statický text a po dvoch týždňoch refaktorovania driftuje od reality.
+
+Harness MVP v2 zavádza systém **Živej, Strojovo Overiteľnej Architektonickej Dokumentácie** rozdelený na dve komplementárne zložky podľa konvencie ko-lokovaného monorepa:
+
+#### 1. Architektonické Rozhodovacie Záznamy (`libs/<scope>/docs/adr/NNNN-<slug>.md` & `docs/adr/`)
+- **Účel:** Zaznamenávajú **Prečo & Zamietnuté Alternatívy (Why & Rejected Alternatives)**.
+- **Ko-lokované umiestnenie:** Doménové rozhodnutia patria priamo do `libs/<scope>/docs/adr/NNNN-<slug>.md` (napr. `libs/harness/docs/adr/`, `libs/sample/docs/adr/`, `libs/es/docs/adr/`) so scoped identifikátorom `id: <scope>:ADR-NNNN`. Koreňový priečinok `docs/adr/` je vyhradený výhradne pre celo-monorepové prierezové pravidlá a centrálny index.
+- **Kontrafaktuálne Pravidlo (Counterfactual Rule):** ADR sa zaznamenáva výhradne vtedy, ak rozhodnutie zahŕňa netriviálne obmedzenia alebo zamietnuté alternatívy, ktoré nie je možné vyčítať zo samotného kódu (*„Zopakoval by budúci inžinier alebo agent rovnakú chybu či zvrátil by tento kompromis, keby nepoznal dôvod nášho rozhodnutia?“*).
+- **Reprezentácia v `HarnessGraph` & Omnigraphe (`AdrDoc` & `GovernsSymbol`):**
+  - Každý ADR dokument je extrahovaný ako uzol `AdrDoc` (`_tag: "AdrDoc"`).
+  - Z uzla `AdrDoc` smerujú hrany `GovernsSymbol` priamo na dotknuté uzly kódu (`EffectFn`, `ServiceTag`, `TaggedError`).
+  - Agenti dopytujú riadiace ADR cez MCP: `harness_callers("<ServiceOrFn>")` vráti hranu `GovernsSymbol` a príslušný uzol `AdrDoc`, zatiaľ čo `harness_callees("<scope>:ADR-NNNN")` zobrazí všetky symboly riadené daným rozhodnutím.
+- **Štruktúra:** MADR štruktúra s povinným zoznamom zamietnutých alternatív a frontmatterom (`id`, `title`, `status`, `date`, `enforced_by`, `spans`, `services`, `errors`).
+
+#### 2. EARS Špecifikácie a Grafy Plánov (`libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` & `docs/specs/`)
+- **Účel:** Uchovávajú **Formálne požiadavky EARS + Overený topologický Mermaid graf z `plan-check`**.
+- **Ko-lokované umiestnenie:** Doménové špecifikácie patria do `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` so scoped `id: <scope>:SPEC-NNNN`. Koreňový priečinok `docs/specs/` slúži pre prierezové špecifikácie a globálny index.
+- **Reprezentácia v `HarnessGraph` & Omnigraphe (`EarsSpec` & `SpecifiesSymbol`):**
+  - Každá EARS špecifikácia je extrahovaná ako uzol `EarsSpec` (`_tag: "EarsSpec"`).
+  - Z uzla `EarsSpec` smerujú hrany `SpecifiesSymbol` priamo na dotknuté uzly `EffectFn`, `ServiceTag` a `TaggedError` naprieč vetvami `plan/current`, `impl/current` aj `main`.
+  - Agenti dopytujú špecifikujúce požiadavky cez MCP: `harness_callers("<ServiceOrFn>")` vráti hranu `SpecifiesSymbol` a uzol `EarsSpec`, a `harness_callees("<scope>:SPEC-NNNN")` vráti všetky špecifikované symboly.
+- **Perzistentná Zmluva:** EARS požiadavky (`UBIQUITOUS`, `WHEN`, `IF/THEN`, `WHILE`, `WHERE`) uložené v špecifikáciách prežijú zhustenie kontextového okna (`/compact`) LLM. Slúžia ako autoritatívny zdroj pravdy pre `@effect-ears-test-reviewer`.
+- **Topologický Záznam:** Po úspešnom `harness plan-check` agent do špecifikácie pripojí kompilovaný Mermaid diagram závislostí a výstup Pre-Implementation Adversarial Plan Lens auditu.
+
+#### 3. Dvojstupňové Deterministické Brány prepojenia Špecifikácií s Kódom
+1. **Spec $\rightarrow$ Plan Brána (`unmapped-spec-symbol` v `harness plan-check`):**
+   - Už vo fáze plánovania, keď má špecifikácia stav `status: proposed`, brána `harness plan-check` (`checkEffectGraph`) striktne overuje, že každý `span`, `service` a `error` deklarovaný vo frontmatteri EARS špecifikácie reálne existuje ako uzol v grafe skeletonu (`stub<A, E, R>()`).
+   - Ak agent deklaroval span `Sample.deletePhoto`, no v `.ts` skeletone ho zabudol vytvoriť alebo nazval inak, `checkEffectGraph` zlyhá s chybou `unmapped-spec-symbol`.
+2. **Plan $\rightarrow$ Impl Brána (`diffHarnessGraphs` v `harness done` + `stale-doc-reference` v `harness gc --strict`):**
+   - Po implementácii a nastavení `status: accepted` príkaz `harness gc --strict` cez pravidlo **`stale-doc-reference`** overí existenciu súborov v `enforced_by` a prítomnosť všetkých symbolov v produkčnom kóde.
+   - Následne `harness done` cez **`diffHarnessGraphs`** (porovnanie vetiev `plan/current` a `impl/current`) garantuje, že implementácia nevynechala žiadnu funkciu, službu ani chybový kanál z overeného plánu.
+
 ---
 
 ## 7. Zhrnutie kľúčových pravidiel pre agentov
@@ -795,5 +835,6 @@ Okrem fázy implementácie sa **Adversarial & Feasibility Lens** zapája už v K
 2. **Kód je plán:** Vždy píšte skeletony priamo do `.ts` súborov pomocou `stub<A, E, R>(...args)`. Žiadne abstraktné markdown plány s nefunkčným kódom.
 3. **Platnosť pečiatky je krehká:** Príkaz `harness verify` musí byť spustený ako úplne posledný krok po akýchkoľvek úpravách kódu. Akákoľvek následná zmena súboru zneplatní hash stromu v `.harness/verify-stamp.json` a zablokuje `harness done`.
 4. **Respektujte eskalácie:** Ak `openapi:check` alebo `migration:check` skončí s kódom `exit 2` a reťazcom `ESCALATE`, okamžite zastavte prácu a predložte breaking zmenu alebo deštruktívnu migráciu na rozhodnutie používateľovi.
-5. **Nenafukujte `AGENTS.md`:** Opakujúce sa problémy riešte výhradne cez skill `compounding-effect-learnings` a 4 ciele povýšenia (Graduation Pyramid).
+5. **Nenafukujte `AGENTS.md`:** Opakujúce sa problémy riešte výhradne cez skill `compounding-effect-learnings` a 5 cieľov povýšenia (Graduation Pyramid: `agent-pattern`, `triage-rule`, `guard-allowlist`, `ast-graph-gate`, `adr`).
 6. **Čistota grafu, brány a rozpočty:** Pred `verify` overte absenciu mŕtveho a netestovaného kódu cez `harness gc --strict`, dodržujte bezpečnostné zákazy v `syntax-bans.js`, rešpektujte `MigrationSafety.decide` a v testoch presadzujte span rozpočty cez `checkSpanBudgets`.
+7. **Živá dokumentácia a spec governance:** Každú novú funkcionalitu začnite formalizáciou EARS požiadaviek v `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (`status: proposed`, so scoped `id: <scope>:SPEC-NNNN`, s fallbackom na koreňové `docs/specs/` len pri prierezových celo-monorepových zmenách). Po úspešnom `plan-check` doplňte Mermaid graf, po implementácii nastavte `status: accepted` a overte platnosť odkazov cez `stale-doc-reference` v `harness gc --strict`. Netriviálne architektonické kompromisy so zamietnutými alternatívami povinne zaznamenajte do doménového `libs/<scope>/docs/adr/NNNN-<slug>.md` (so scoped `id: <scope>:ADR-NNNN`, alebo `docs/adr/` pre celo-monorepové pravidlá).

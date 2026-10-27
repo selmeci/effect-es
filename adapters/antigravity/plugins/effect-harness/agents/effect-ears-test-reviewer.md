@@ -19,10 +19,13 @@ Do NOT flag or report any of the following, as deterministic workspace gates (`@
 
 ## What to Hunt For
 
-Audit test suites (`*.test.ts`, `*.spec.ts`) and corresponding implementations for these three critical failure modes:
+First, **locate and read the feature's specification file in `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (or `docs/specs/`)**. The spec frontmatter specifies the exact `spans`, `services`, and `errors`, while Section 2 defines the formal EARS requirements (`WHEN`, `IF/THEN`, `WHILE`). You must verify 1:1 behavioral coverage between the spec, the code graph, and the test suite.
 
-### 1. Missing EARS Clause Coverage
-Every requirement specified in EARS format must map to an explicit, behavior-sensitive test assertion:
+Audit test suites (`*.test.ts`, `*.spec.ts`) and corresponding implementations for these critical failure modes:
+
+### 1. Missing EARS Clause & Spec Symbol Coverage
+Every requirement specified in the EARS spec must map to an explicit, behavior-sensitive test assertion:
+- **Spec Symbol Parity:** Every span declared in `spans` and every error declared in `errors` in the spec frontmatter must be directly exercised by tests.
 - **`WHEN <trigger>` (Happy-Path):**
   - Must assert BOTH the returned value AND the observable state mutation (e.g. verifying record creation in the repository or state store, not just that the effect succeeded).
 - **`IF <condition>, THEN <action>` (Sad-Path / Typed Failures):**

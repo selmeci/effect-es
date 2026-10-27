@@ -25,8 +25,11 @@ In this project, the plan IS compilable TypeScript code. Never write long Markdo
    ```bash
    node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts plan-check
    ```
-   Fix any type error, duplicate span name, or `GraphPolicyViolation` (`domain-requires-infra`, `domain-requires-cloud-binding`, `impure-decider`, `layer-cycle`) until `plan-check` exits `0` and prints the Mermaid graph.
+   Fix any type error, duplicate span name, or `GraphPolicyViolation` (`domain-requires-infra`, `domain-requires-cloud-binding`, `impure-decider`, `layer-cycle`, `unmapped-spec-symbol` — verifying that every `span`, `service`, and `error` in the EARS spec frontmatter is represented in the `.ts` skeleton graph) until `plan-check` exits `0` and prints the Mermaid graph.
 5. **Pre-Implementation Adversarial & Feasibility Lens (for stateful or multi-package plans):** After `harness plan-check` exits `0` and prints the Mermaid graph, audit the skeleton graph against failure modes before dispatching implementers using the [Pre-Implementation Adversarial Plan Lens](references/adversarial-plan-lens.md) (or dispatching [@effect-adversarial-reviewer](../../executing-effect-stubs/references/personas/adversarial-reviewer.md)): verify idempotency keys are present in contract inputs, partial-failure compensation between DO/D1/Queue is represented in `E` and `R`, optimistic concurrency error channels are declared, and no domain `*.decide` function depends on impure services. For reviewer dispatch instructions and personas across all stages, consult the [Reviewer Dispatch Guide](../../executing-effect-stubs/references/dispatch-reviewers.md).
+6. **Update Spec and Record ADR (Spec Governance):**
+   - **Update `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md`:** Append the verified Mermaid topology diagram printed by `harness plan-check` under `## 4. Verified Plan Topology Graph` and record the Pre-Implementation Adversarial Plan Lens summary checklist.
+   - **Record Architectural Decisions:** If the planning phase decided a non-obvious architectural trade-off, boundary constraint, or rejected alternative that meets the Counterfactual Rule (would a future engineer/agent repeat this mistake or re-litigate the decision without knowing why?), record a concise ADR in `libs/<scope>/docs/adr/NNNN-<slug>.md` (with scoped `id: <scope>:ADR-NNNN`, or in root `docs/adr/` if workspace-wide) with machine-verifiable YAML frontmatter (`id`, `title`, `status: accepted`, `date`, `enforced_by`, `spans`, `services`, `errors`).
 
 ## Skeleton Example
 
@@ -54,11 +57,13 @@ export const deletePhoto = Effect.fn("Sample.deletePhoto")(function* (id: number
 | "I'll write the plan in a `.md` file with code blocks first" | Uncompiled Markdown code drifts from `effect@4.0.0` types and burns 2x tokens. Write `.ts` skeletons with `stub<A, E, R>()` instead. |
 | "I'll use `Effect.die('TODO')` instead of `stub<A, E, R>()`" | `Effect.die` erases `A`, `E`, and `R` to `never`, blinding `effect-graph:check`. Always use `stub<A, E, R>(...args)`. |
 | "This feature is small, I'll skip `plan-check` and write the body directly" | `plan-check` snapshots `.harness/plan-graph-snapshot.json` required by `harness done` to verify plan-vs-impl parity. |
+| "I don't need to append the Mermaid graph or record ADRs in docs/" | Omitting the verified topology graph from `libs/<scope>/docs/specs/` deprives reviewer agents of ground truth. ADRs prevent future agents from re-litigating non-obvious trade-offs. |
 
 ## Red Flags — STOP
 
 - Creating a `.md` plan with multi-line TypeScript code blocks instead of `.ts` `stub<A, E, R>()` skeletons
 - Writing production `Effect.gen` bodies before `harness plan-check` exits `0`
 - Adding `RequiresService` dependencies to a `*.decide` function (`impure-decider`)
+- Skipping updating `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` with the verified Mermaid graph and adversarial lens summary after `plan-check`
 
-**REQUIRED NEXT SKILL:** Once `harness plan-check` exits `0` and outputs the Mermaid graph, use `executing-effect-stubs`.
+**REQUIRED NEXT SKILL:** Once `harness plan-check` exits `0`, outputs the Mermaid graph, and updates the spec, use `executing-effect-stubs`.

@@ -186,4 +186,123 @@ describe("verify-stamp and plan/impl graph diff", () => {
     expect(diff.reasons.some((r) => r.includes("greet"))).toBe(true)
     expect(diff.reasons.some((r) => r.includes("Greeter"))).toBe(true)
   })
+
+  it("diffPlanAndImplGraphs detects missing planned SpecifiesSymbol and GovernsSymbol edges with descriptive reasons", () => {
+    const planGraph = buildHarnessGraph({
+      fns: [
+        {
+          qualname: "libs/sample/domain/src/index.ts#greet",
+          spanName: "Sample.greet",
+          file: "libs/sample/domain/src/index.ts",
+          line: 4,
+          packageTag: "domain",
+          successType: "string",
+          isStub: false
+        }
+      ],
+      services: [
+        {
+          tagId: "PhotoRepo",
+          name: "PhotoRepo",
+          packageTag: "service",
+          file: "libs/sample/service/src/index.ts"
+        }
+      ],
+      adrDocs: [
+        {
+          id: "sample:ADR-0001",
+          title: "ADR Title",
+          status: "accepted",
+          path: "docs/adr/0001.md",
+          enforcedByFiles: [],
+          referencedSpans: [],
+          referencedServices: ["PhotoRepo"],
+          referencedErrors: []
+        }
+      ],
+      earsSpecs: [
+        {
+          id: "sample:SPEC-0001",
+          title: "Spec Title",
+          status: "accepted",
+          path: "docs/specs/0001.md",
+          enforcedByFiles: [],
+          referencedSpans: ["Sample.greet"],
+          referencedServices: [],
+          referencedErrors: []
+        }
+      ],
+      governsSymbols: [
+        {
+          adrId: "sample:ADR-0001",
+          targetKey: "PhotoRepo",
+          targetKind: "ServiceTag"
+        }
+      ],
+      specifiesSymbols: [
+        {
+          specId: "sample:SPEC-0001",
+          targetKey: "libs/sample/domain/src/index.ts#greet",
+          targetKind: "EffectFn"
+        }
+      ]
+    })
+
+    const implGraph = buildHarnessGraph({
+      fns: [
+        {
+          qualname: "libs/sample/domain/src/index.ts#greet",
+          spanName: "Sample.greet",
+          file: "libs/sample/domain/src/index.ts",
+          line: 4,
+          packageTag: "domain",
+          successType: "string",
+          isStub: false
+        }
+      ],
+      services: [
+        {
+          tagId: "PhotoRepo",
+          name: "PhotoRepo",
+          packageTag: "service",
+          file: "libs/sample/service/src/index.ts"
+        }
+      ],
+      adrDocs: [
+        {
+          id: "sample:ADR-0001",
+          title: "ADR Title",
+          status: "accepted",
+          path: "docs/adr/0001.md",
+          enforcedByFiles: [],
+          referencedSpans: [],
+          referencedServices: ["PhotoRepo"],
+          referencedErrors: []
+        }
+      ],
+      earsSpecs: [
+        {
+          id: "sample:SPEC-0001",
+          title: "Spec Title",
+          status: "accepted",
+          path: "docs/specs/0001.md",
+          enforcedByFiles: [],
+          referencedSpans: ["Sample.greet"],
+          referencedServices: [],
+          referencedErrors: []
+        }
+      ],
+      governsSymbols: [],
+      specifiesSymbols: []
+    })
+
+    const planImplDiff = diffPlanAndImplGraphs(planGraph, implGraph)
+    expect(planImplDiff.ok).toBe(false)
+    expect(planImplDiff.reasons).toEqual(
+      expect.arrayContaining([
+        "Missing planned GovernsSymbol edge: sample:ADR-0001 -> PhotoRepo",
+        "Missing planned SpecifiesSymbol edge: sample:SPEC-0001 -> libs/sample/domain/src/index.ts#greet"
+      ])
+    )
+  })
 })

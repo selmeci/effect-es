@@ -23,6 +23,7 @@ import {
   clearFrictionEvents,
   diffPlanAndImplGraphs,
   type FrictionEventKind,
+  loadGovernanceDocsFromDisk,
   readFrictionEvents,
   resolveHarnessStateDir,
   scanGraphEntropy,
@@ -737,9 +738,11 @@ const handleGc = (
     const strict = argv.includes("--strict")
     const graph = yield* extractWorkspaceTypeAwareGraph(repoRoot)
     const hasPatternsDir = existsSync(join(repoRoot, "agent-patterns"))
+    const governanceDocs = loadGovernanceDocsFromDisk(repoRoot)
     const report = scanGraphEntropy(graph, {
       expectedPatterns: hasPatternsDir ? IDIOM_BLOCKS : undefined,
-      checkUntestedDomainFns: true
+      checkUntestedDomainFns: true,
+      governanceDocs
     })
     return {
       exitCode: strict && !report.clean ? 1 : 0,

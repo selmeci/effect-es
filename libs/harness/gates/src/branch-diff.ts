@@ -30,6 +30,14 @@ export const diffPlanAndImplGraphs = (
       reasons.push(
         `Missing planned FailsWith edge: ${edge.callerQualname} -> ${edge.errorTag}`
       )
+    } else if (edge._tag === "SpecifiesSymbol") {
+      reasons.push(
+        `Missing planned SpecifiesSymbol edge: ${edge.specId} -> ${edge.targetKey}`
+      )
+    } else if (edge._tag === "GovernsSymbol") {
+      reasons.push(
+        `Missing planned GovernsSymbol edge: ${edge.adrId} -> ${edge.targetKey}`
+      )
     } else {
       reasons.push(`Missing planned edge: ${edge._tag}`)
     }

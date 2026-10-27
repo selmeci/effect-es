@@ -3,14 +3,17 @@ import * as path from "node:path"
 import { Effect, Option, Schema } from "effect"
 import * as Graph from "effect/Graph"
 import {
+  type AdrDocNode,
   type BuildHarnessGraphInput,
   type CalleeResult,
   type CallerResult,
+  type EarsSpecNode,
   type EffectFnNode,
   type ExercisesSpanEdge,
   type FailsWithEdge,
   getEdgeKey,
   getNodeKey,
+  type GovernsSymbolEdge,
   type HarnessEdge,
   type HarnessGraph,
   type HarnessNode,
@@ -20,6 +23,7 @@ import {
   type RequiresServiceEdge,
   type ServiceLayerNode,
   type ServiceTagNode,
+  type SpecifiesSymbolEdge,
   type TaggedErrorNode,
   type TracedCallEdge,
   type VitestCaseNode
@@ -69,6 +73,20 @@ export const buildHarnessGraph = (input: BuildHarnessGraphInput): HarnessGraph =
       const node: PatternDocNode = { _tag: "PatternDoc", ...p }
       const idx = Graph.addNode(mutable, node)
       nodeIndexByKey.set(node.slug, idx)
+    }
+
+    // 7. Add adrDocs
+    for (const a of input.adrDocs ?? []) {
+      const node: AdrDocNode = { _tag: "AdrDoc", ...a }
+      const idx = Graph.addNode(mutable, node)
+      nodeIndexByKey.set(node.id, idx)
+    }
+
+    // 8. Add earsSpecs
+    for (const s of input.earsSpecs ?? []) {
+      const node: EarsSpecNode = { _tag: "EarsSpec", ...s }
+      const idx = Graph.addNode(mutable, node)
+      nodeIndexByKey.set(node.id, idx)
     }
 
     // Add edges
@@ -155,6 +173,34 @@ export const buildHarnessGraph = (input: BuildHarnessGraphInput): HarnessGraph =
         Graph.addEdge(mutable, srcIdx, dstIdx, edge)
       }
     }
+
+    for (const g of input.governsSymbols ?? []) {
+      const srcIdx = nodeIndexByKey.get(g.adrId)
+      const dstIdx = nodeIndexByKey.get(g.targetKey)
+      if (srcIdx !== undefined && dstIdx !== undefined) {
+        const edge: GovernsSymbolEdge = {
+          _tag: "GovernsSymbol",
+          adrId: g.adrId,
+          targetKey: g.targetKey,
+          targetKind: g.targetKind
+        }
+        Graph.addEdge(mutable, srcIdx, dstIdx, edge)
+      }
+    }
+
+    for (const s of input.specifiesSymbols ?? []) {
+      const srcIdx = nodeIndexByKey.get(s.specId)
+      const dstIdx = nodeIndexByKey.get(s.targetKey)
+      if (srcIdx !== undefined && dstIdx !== undefined) {
+        const edge: SpecifiesSymbolEdge = {
+          _tag: "SpecifiesSymbol",
+          specId: s.specId,
+          targetKey: s.targetKey,
+          targetKind: s.targetKind
+        }
+        Graph.addEdge(mutable, srcIdx, dstIdx, edge)
+      }
+    }
   })
 
   return { graph, nodeIndexByKey }
@@ -217,6 +263,18 @@ export const resolveNode = (
       case "PatternDoc": {
         if (
           node.slug === symbolOrSpan ||
+          node.path === symbolOrSpan ||
+          node.path.endsWith(`/${symbolOrSpan}`) ||
+          node.path.endsWith(`/${symbolOrSpan}.md`)
+        ) {
+          return node
+        }
+        break
+      }
+      case "AdrDoc":
+      case "EarsSpec": {
+        if (
+          node.id === symbolOrSpan ||
           node.path === symbolOrSpan ||
           node.path.endsWith(`/${symbolOrSpan}`) ||
           node.path.endsWith(`/${symbolOrSpan}.md`)
@@ -321,6 +379,31 @@ export const findCallees = (
             edgeKind: "FailsWith",
             receiverLayer: null
           })
+        } else if (edge.data._tag === "GovernsSymbol" || edge.data._tag === "SpecifiesSymbol") {
+          if (callee._tag === "EffectFn") {
+            results.push({
+              qualname: callee.qualname,
+              spanName: callee.spanName,
+              edgeKind: edge.data._tag,
+              receiverLayer: null
+            })
+          } else if (callee._tag === "ServiceTag") {
+            results.push({
+              qualname: callee.tagId,
+              spanName: callee.name,
+              tagId: callee.tagId,
+              name: callee.name,
+              edgeKind: edge.data._tag,
+              receiverLayer: null
+            })
+          } else if (callee._tag === "TaggedError") {
+            results.push({
+              qualname: callee.errorTag,
+              spanName: callee.errorTag,
+              edgeKind: edge.data._tag,
+              receiverLayer: null
+            })
+          }
         }
       }
     }
@@ -384,6 +467,15 @@ export const findCallers = (
             edgeKind: edge.data._tag,
             receiverLayer: null
           })
+        } else if (edge.data._tag === "GovernsSymbol" || edge.data._tag === "SpecifiesSymbol") {
+          if (caller._tag === "AdrDoc" || caller._tag === "EarsSpec") {
+            results.push({
+              qualname: caller.id,
+              spanName: caller.title,
+              edgeKind: edge.data._tag,
+              receiverLayer: null
+            })
+          }
         }
       }
     }
@@ -408,6 +500,10 @@ export const renderMermaid = (harnessGraph: HarnessGraph): string => {
           return `Test:${node.testName}`
         case "PatternDoc":
           return `Pattern:${node.slug}`
+        case "AdrDoc":
+          return `ADR:${node.id}`
+        case "EarsSpec":
+          return `Spec:${node.id}`
       }
     },
     edgeLabel: (edge: HarnessEdge) => {
@@ -424,6 +520,10 @@ export const renderMermaid = (harnessGraph: HarnessGraph): string => {
           return "layerRequires"
         case "FailsWith":
           return "failsWith"
+        case "GovernsSymbol":
+          return "governs"
+        case "SpecifiesSymbol":
+          return "specifies"
       }
     }
   })
@@ -525,6 +625,44 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
         )
         break
       }
+      case "AdrDoc": {
+        lines.push(
+          JSON.stringify({
+            type: "AdrDoc",
+            id: node.id,
+            data: {
+              id: node.id,
+              title: node.title,
+              status: node.status,
+              path: node.path,
+              enforcedByFiles: node.enforcedByFiles,
+              referencedSpans: node.referencedSpans,
+              referencedServices: node.referencedServices,
+              referencedErrors: node.referencedErrors
+            }
+          })
+        )
+        break
+      }
+      case "EarsSpec": {
+        lines.push(
+          JSON.stringify({
+            type: "EarsSpec",
+            id: node.id,
+            data: {
+              id: node.id,
+              title: node.title,
+              status: node.status,
+              path: node.path,
+              enforcedByFiles: node.enforcedByFiles,
+              referencedSpans: node.referencedSpans,
+              referencedServices: node.referencedServices,
+              referencedErrors: node.referencedErrors
+            }
+          })
+        )
+        break
+      }
     }
   }
 
@@ -603,6 +741,34 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             data: {
               callCount: edge.data.callCount,
               receiverLayer: edge.data.receiverLayer
+            }
+          })
+        )
+        break
+      }
+      case "GovernsSymbol": {
+        lines.push(
+          JSON.stringify({
+            edge: "GovernsSymbol",
+            type: "GovernsSymbol",
+            from: edge.data.adrId,
+            to: edge.data.targetKey,
+            data: {
+              targetKind: edge.data.targetKind
+            }
+          })
+        )
+        break
+      }
+      case "SpecifiesSymbol": {
+        lines.push(
+          JSON.stringify({
+            edge: "SpecifiesSymbol",
+            type: "SpecifiesSymbol",
+            from: edge.data.specId,
+            to: edge.data.targetKey,
+            data: {
+              targetKind: edge.data.targetKind
             }
           })
         )
@@ -701,7 +867,12 @@ export const diffHarnessGraphs = (
   }
 
   for (const [, edge] of Graph.edges(planGraph.graph)) {
-    if (edge.data._tag === "RequiresService" || edge.data._tag === "FailsWith") {
+    if (
+      edge.data._tag === "RequiresService" ||
+      edge.data._tag === "FailsWith" ||
+      edge.data._tag === "SpecifiesSymbol" ||
+      edge.data._tag === "GovernsSymbol"
+    ) {
       const key = getEdgeKey(edge.data)
       if (!implEdgeKeys.has(key)) {
         missingEdges.push(edge.data)

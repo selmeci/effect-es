@@ -13,15 +13,30 @@ Turn informal feature ideas into an unambiguous **EARS (Easy Approach to Require
 
 ## Discovery & Interview Sequence
 
-1. **Inspect Existing Graph First:** Call `harness_resolve` and `harness_callers` on related domain symbols (`EffectFn`, `ServiceTag`, `TaggedError`) so questions are grounded in the actual codebase.
+1. **Inspect Existing Graph First:** Call `harness_resolve` and `harness_callers` on related domain symbols (`EffectFn`, `ServiceTag`, `TaggedError`) so questions are grounded in the actual codebase. Note that `harness_callers` also returns `GovernsSymbol` (`AdrDoc`) and `SpecifiesSymbol` (`EarsSpec`) edges so you immediately see existing ADRs and EARS specs governing those symbols.
 2. **Clarify Ambiguities (One Question at a Time):** Ask at most one targeted question per turn (or use `ask_question` for multiple-choice trade-offs) to resolve missing failure conditions (`IF/THEN`) or state invariants (`WHILE`).
-3. **Emit the EARS Specification Contract:** Present the final specification in the exact structure below and get user confirmation before moving to skeleton planning.
+3. **Emit and Persist the EARS Specification Contract:** Present the final specification in the exact structure below and get user confirmation before moving to skeleton planning. Once confirmed by the user, **you MUST save the specification to `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md`** (e.g., `libs/sample/docs/specs/...` or `libs/es/docs/specs/...`, falling back to root `docs/specs/` only for cross-monorepo tasks) with machine-verifiable YAML frontmatter (`id: <scope>:SPEC-NNNN`, `title`, `status: proposed`, `date`, `enforced_by`, `spans`, `services`, `errors`) so the EARS behavioral contract survives context compaction (`/compact`). The `spans`, `services`, and `errors` declared in this frontmatter immediately become `EarsSpec` nodes and `SpecifiesSymbol` edges in `HarnessGraph` & Omnigraph, which `harness plan-check` deterministically enforces via `unmapped-spec-symbol` (even while `status: proposed`), and `harness gc --strict` and `@effect-ears-test-reviewer` verify upon completion.
 
 ## Output Contract (Positive Recipe)
 
-Every specification produced by this skill has three parts, in order:
+Every specification produced by this skill is saved to `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (or root `docs/specs/` if cross-monorepo) with frontmatter followed by three parts, in order:
 
 ```markdown
+---
+id: <scope>:SPEC-NNNN
+title: <Feature Title>
+status: proposed
+date: YYYY-MM-DD
+enforced_by:
+  - <target package index files, e.g. libs/sample/contract/src/index.ts>
+spans:
+  - <planned Effect.fn span names, e.g. Domain.useCase, Domain.decide>
+services:
+  - <planned Context.Service tags, e.g. MyService>
+errors:
+  - <planned TaggedError classes, e.g. MyError>
+---
+
 ### 1. Existing Graph Context
 - **Reused Contracts / Errors:** `<symbols from type:contract>`
 - **Reused Services:** `<Context.Service tags from type:service>`

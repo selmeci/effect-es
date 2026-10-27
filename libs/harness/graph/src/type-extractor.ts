@@ -17,8 +17,12 @@ import {
 } from "ts-morph"
 import { buildHarnessGraph } from "./graph-engine.js"
 import type {
+  AdrDocNode,
+  EarsSpecNode,
   EffectFnNode,
   ExercisesSpanEdge,
+  GovernanceDocStatus,
+  GovernsSymbolEdge,
   HarnessEdge,
   HarnessGraph,
   HarnessNode,
@@ -27,6 +31,7 @@ import type {
   PatternDocNode,
   ServiceLayerNode,
   ServiceTagNode,
+  SpecifiesSymbolEdge,
   TaggedErrorNode,
   VitestCaseNode
 } from "./model.js"
@@ -85,7 +90,7 @@ export const resolvePackageTag = (repoRoot: string, relFilePath: string): Packag
   return "service"
 }
 
-const resolveRepoRoot = (startDir: string): string => {
+export const resolveRepoRoot = (startDir: string): string => {
   let curr = path.resolve(startDir)
   while (curr !== path.dirname(curr)) {
     if (fs.existsSync(path.join(curr, "pnpm-workspace.yaml"))) {
@@ -730,18 +735,216 @@ const findWorkspaceTestFiles = (repoRoot: string): ReadonlyArray<string> => {
   return results
 }
 
+const parseGovernanceDocFile = (
+  relDocPath: string,
+  content: string
+): AdrDocNode | EarsSpecNode | null => {
+  const normalized = content.replace(/^\uFEFF/, "")
+  const match = normalized.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  if (!match || match[1] === undefined) {
+    return null
+  }
+
+  const yamlContent = match[1]
+  const lines = yamlContent.split(/\r?\n/)
+
+  const scalars = new Map<string, string>()
+  const lists = new Map<string, Array<string>>()
+
+  let currentListKey: string | null = null
+
+  const stripQuotes = (val: string): string => {
+    let trimmed = val.trim()
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      return trimmed.slice(1, -1).trim()
+    }
+    const hashIdx = trimmed.indexOf("#")
+    if (hashIdx !== -1) {
+      trimmed = trimmed.slice(0, hashIdx).trim()
+    }
+    return trimmed
+  }
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim()
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      continue
+    }
+
+    const listItemMatch = rawLine.match(/^\s*-\s*(.*)$/)
+    if (listItemMatch && currentListKey !== null) {
+      const item = stripQuotes(listItemMatch[1] ?? "")
+      if (item.length > 0) {
+        const list = lists.get(currentListKey)
+        if (list) {
+          list.push(item)
+        }
+      }
+      continue
+    }
+
+    currentListKey = null
+
+    const keyValMatch = rawLine.match(/^([a-zA-Z0-9_-]+)\s*:(.*)$/)
+    if (keyValMatch) {
+      const key = keyValMatch[1]!.trim()
+      const rest = keyValMatch[2]!.trim()
+
+      if (rest.startsWith("[") && rest.endsWith("]")) {
+        const inner = rest.slice(1, -1).trim()
+        const items =
+          inner.length === 0
+            ? []
+            : inner
+                .split(",")
+                .map(stripQuotes)
+                .filter((s) => s.length > 0)
+        lists.set(key, items)
+      } else if (rest === "") {
+        lists.set(key, [])
+        currentListKey = key
+      } else {
+        scalars.set(key, stripQuotes(rest))
+      }
+    }
+  }
+
+  const id = scalars.get("id")
+  if (!id || id.trim() === "") {
+    return null
+  }
+
+  let title = scalars.get("title")
+  if (!title || title.trim() === "") {
+    const titleMatch = normalized.match(/^#\s+(.+)$/m)
+    title = titleMatch ? titleMatch[1]!.trim() : id
+  }
+
+  const rawStatus = scalars.get("status")
+  const status: GovernanceDocStatus =
+    rawStatus === "accepted" ||
+    rawStatus === "proposed" ||
+    rawStatus === "superseded" ||
+    rawStatus === "deprecated"
+      ? rawStatus
+      : "proposed"
+
+  const enforcedByFiles = lists.get("enforced_by") ?? []
+  const referencedSpans = lists.get("spans") ?? []
+  const referencedServices = lists.get("services") ?? []
+  const referencedErrors = lists.get("errors") ?? []
+
+  if (relDocPath.includes("/adr/")) {
+    return {
+      _tag: "AdrDoc",
+      id,
+      title,
+      status,
+      path: relDocPath,
+      enforcedByFiles,
+      referencedSpans,
+      referencedServices,
+      referencedErrors
+    }
+  }
+
+  if (relDocPath.includes("/specs/")) {
+    return {
+      _tag: "EarsSpec",
+      id,
+      title,
+      status,
+      path: relDocPath,
+      enforcedByFiles,
+      referencedSpans,
+      referencedServices,
+      referencedErrors
+    }
+  }
+
+  return null
+}
+
+export const loadWorkspaceGovernanceDocs = (
+  repoRoot: string
+): ReadonlyArray<AdrDocNode | EarsSpecNode> => {
+  const root = resolveRepoRoot(repoRoot)
+  const candidateRelDirs: Array<string> = ["docs/adr", "docs/specs"]
+
+  const listSubdirectories = (parentRel: string): ReadonlyArray<string> => {
+    const parentPath = path.join(root, parentRel)
+    if (!fs.existsSync(parentPath)) {
+      return []
+    }
+    return fs
+      .readdirSync(parentPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b))
+  }
+
+  const libScopes = listSubdirectories("libs")
+  for (const scope of libScopes) {
+    candidateRelDirs.push(`libs/${scope}/docs/adr`)
+    candidateRelDirs.push(`libs/${scope}/docs/specs`)
+  }
+
+  const appNames = listSubdirectories("apps")
+  for (const app of appNames) {
+    candidateRelDirs.push(`apps/${app}/docs/adr`)
+    candidateRelDirs.push(`apps/${app}/docs/specs`)
+  }
+
+  const results: Array<AdrDocNode | EarsSpecNode> = []
+
+  for (const relDir of candidateRelDirs) {
+    const fullDir = path.join(root, relDir)
+    if (!fs.existsSync(fullDir)) {
+      continue
+    }
+
+    const entries = fs.readdirSync(fullDir, { withFileTypes: true })
+    const files = entries
+      .filter(
+        (entry) =>
+          entry.isFile() &&
+          entry.name.endsWith(".md") &&
+          entry.name !== "README.md" &&
+          entry.name !== "TEMPLATE.md"
+      )
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b))
+
+    for (const file of files) {
+      const relDocPath = `${relDir}/${file}`
+      const fullPath = path.join(root, relDocPath)
+      const content = fs.readFileSync(fullPath, "utf-8")
+      const parsed = parseGovernanceDocFile(relDocPath, content)
+      if (parsed !== null) {
+        results.push(parsed)
+      }
+    }
+  }
+
+  return results
+}
+
 export const extractWorkspaceTypeAwareGraph = (
   repoRoot: string
 ): Effect.Effect<HarnessGraph> =>
   Effect.sync(() => {
-    const relFiles = findWorkspaceSrcFiles(repoRoot)
+    const root = resolveRepoRoot(repoRoot)
+    const relFiles = findWorkspaceSrcFiles(root)
     const inputs: Array<SourceFileInput> = []
 
     for (const file of relFiles) {
-      const fullPath = path.join(repoRoot, file)
+      const fullPath = path.join(root, file)
       if (!fs.existsSync(fullPath)) continue
       const content = fs.readFileSync(fullPath, "utf-8")
-      const packageTag = resolvePackageTag(repoRoot, file)
+      const packageTag = resolvePackageTag(root, file)
       inputs.push({
         filePath: file,
         content,
@@ -749,27 +952,34 @@ export const extractWorkspaceTypeAwareGraph = (
       })
     }
 
-    const patternDocs = loadPatternDocs(repoRoot)
+    const patternDocs = loadPatternDocs(root)
     const baseGraph = extractTypeAwareGraphFromSource(inputs, {
-      repoRoot,
+      repoRoot: root,
       patternDocs
     })
 
     const effectFns: Array<EffectFnNode> = []
+    const serviceTags: Array<ServiceTagNode> = []
+    const taggedErrors: Array<TaggedErrorNode> = []
     for (const [, node] of Graph.nodes(baseGraph.graph)) {
       if (node._tag === "EffectFn") {
         effectFns.push(node)
+      } else if (node._tag === "ServiceTag") {
+        serviceTags.push(node)
+      } else if (node._tag === "TaggedError") {
+        taggedErrors.push(node)
       }
     }
 
-    const testFiles = findWorkspaceTestFiles(repoRoot)
+    const testFiles = findWorkspaceTestFiles(root)
+    const governanceDocs = loadWorkspaceGovernanceDocs(root)
     const updatedNodeIndexByKey = new Map<string, Graph.NodeIndex>(baseGraph.nodeIndexByKey)
 
     const augmentedGraph = Graph.mutate<HarnessNode, HarnessEdge>(
       baseGraph.graph,
       (mutable) => {
         for (const relTestFile of testFiles) {
-          const fullPath = path.join(repoRoot, relTestFile)
+          const fullPath = path.join(root, relTestFile)
           if (!fs.existsSync(fullPath)) continue
           const content = fs.readFileSync(fullPath, "utf-8")
           if (
@@ -811,6 +1021,112 @@ export const extractWorkspaceTypeAwareGraph = (
                   receiverLayer: null
                 }
                 Graph.addEdge(mutable, testIdx, calleeIdx, edge)
+              }
+            }
+          }
+        }
+
+        for (const docNode of governanceDocs) {
+          const docIdx = Graph.addNode(mutable, docNode)
+          updatedNodeIndexByKey.set(docNode.id, docIdx)
+
+          // 1. Spans -> EffectFn
+          const addedFnTargets = new Set<string>()
+          for (const span of docNode.referencedSpans) {
+            for (const fnNode of effectFns) {
+              if (
+                fnNode.spanName === span ||
+                fnNode.qualname === span ||
+                fnNode.qualname.endsWith(`#${span}`)
+              ) {
+                if (addedFnTargets.has(fnNode.qualname)) continue
+                addedFnTargets.add(fnNode.qualname)
+                const targetIdx = updatedNodeIndexByKey.get(fnNode.qualname)
+                if (targetIdx !== undefined) {
+                  if (docNode._tag === "AdrDoc") {
+                    const edge: GovernsSymbolEdge = {
+                      _tag: "GovernsSymbol",
+                      adrId: docNode.id,
+                      targetKey: fnNode.qualname,
+                      targetKind: "EffectFn"
+                    }
+                    Graph.addEdge(mutable, docIdx, targetIdx, edge)
+                  } else {
+                    const edge: SpecifiesSymbolEdge = {
+                      _tag: "SpecifiesSymbol",
+                      specId: docNode.id,
+                      targetKey: fnNode.qualname,
+                      targetKind: "EffectFn"
+                    }
+                    Graph.addEdge(mutable, docIdx, targetIdx, edge)
+                  }
+                }
+              }
+            }
+          }
+
+          // 2. Services -> ServiceTag
+          const addedSvcTargets = new Set<string>()
+          for (const svc of docNode.referencedServices) {
+            for (const sNode of serviceTags) {
+              if (
+                sNode.tagId === svc ||
+                sNode.name === svc ||
+                sNode.tagId.endsWith(`#${svc}`)
+              ) {
+                if (addedSvcTargets.has(sNode.tagId)) continue
+                addedSvcTargets.add(sNode.tagId)
+                const targetIdx = updatedNodeIndexByKey.get(sNode.tagId)
+                if (targetIdx !== undefined) {
+                  if (docNode._tag === "AdrDoc") {
+                    const edge: GovernsSymbolEdge = {
+                      _tag: "GovernsSymbol",
+                      adrId: docNode.id,
+                      targetKey: sNode.tagId,
+                      targetKind: "ServiceTag"
+                    }
+                    Graph.addEdge(mutable, docIdx, targetIdx, edge)
+                  } else {
+                    const edge: SpecifiesSymbolEdge = {
+                      _tag: "SpecifiesSymbol",
+                      specId: docNode.id,
+                      targetKey: sNode.tagId,
+                      targetKind: "ServiceTag"
+                    }
+                    Graph.addEdge(mutable, docIdx, targetIdx, edge)
+                  }
+                }
+              }
+            }
+          }
+
+          // 3. Errors -> TaggedError
+          const addedErrTargets = new Set<string>()
+          for (const err of docNode.referencedErrors) {
+            for (const eNode of taggedErrors) {
+              if (eNode.errorTag === err) {
+                if (addedErrTargets.has(eNode.errorTag)) continue
+                addedErrTargets.add(eNode.errorTag)
+                const targetIdx = updatedNodeIndexByKey.get(eNode.errorTag)
+                if (targetIdx !== undefined) {
+                  if (docNode._tag === "AdrDoc") {
+                    const edge: GovernsSymbolEdge = {
+                      _tag: "GovernsSymbol",
+                      adrId: docNode.id,
+                      targetKey: eNode.errorTag,
+                      targetKind: "TaggedError"
+                    }
+                    Graph.addEdge(mutable, docIdx, targetIdx, edge)
+                  } else {
+                    const edge: SpecifiesSymbolEdge = {
+                      _tag: "SpecifiesSymbol",
+                      specId: docNode.id,
+                      targetKey: eNode.errorTag,
+                      targetKind: "TaggedError"
+                    }
+                    Graph.addEdge(mutable, docIdx, targetIdx, edge)
+                  }
+                }
               }
             }
           }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
-import { existsSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
 import { buildHarnessGraph, loadGraphSnapshot } from "@harness/graph"
@@ -12,9 +13,12 @@ import {
   decideSessionHandoff,
   decideSpanBudgets,
   diffPlanAndImplGraphs,
+  loadGovernanceDocsFromDisk,
+  parseGovernanceDocFrontmatter,
   resolveHarnessStateDir,
   scanGraphEntropy,
   type FrictionCluster,
+  type GovernanceDocReference,
   type SpanSample
 } from "../src/index.js"
 
@@ -254,6 +258,427 @@ describe("Harness Gates: GC check, Session Handoff, Span Budget, and State Dir",
         expect(reportTested.clean).toBe(true)
       })
     )
+
+    it("parses ADR and EARS spec YAML frontmatter accurately", () => {
+      const adrMarkdown = `---
+id: ADR-0001
+status: accepted
+enforced_by:
+  - libs/harness/gates/src/gc-check.ts
+  - libs/harness/gates/test/gc-handoff-budget.test.ts
+spans:
+  - Sample.greet
+services:
+  - GreeterService
+errors:
+  - GreeterError
+---
+# ADR-0001
+`
+      const parsedAdr = parseGovernanceDocFrontmatter(
+        "docs/adr/0001-adr.md",
+        adrMarkdown,
+        (rel) => rel.includes("gc-check.ts")
+      )
+      expect(parsedAdr).not.toBeNull()
+      expect(parsedAdr?.id).toBe("ADR-0001")
+      expect(parsedAdr?.status).toBe("accepted")
+      expect(parsedAdr?.docPath).toBe("docs/adr/0001-adr.md")
+      expect(parsedAdr?.enforcedByFiles).toEqual([
+        "libs/harness/gates/src/gc-check.ts",
+        "libs/harness/gates/test/gc-handoff-budget.test.ts"
+      ])
+      expect(parsedAdr?.existingFiles).toEqual([
+        "libs/harness/gates/src/gc-check.ts"
+      ])
+      expect(parsedAdr?.referencedSpans).toEqual(["Sample.greet"])
+      expect(parsedAdr?.referencedServices).toEqual(["GreeterService"])
+      expect(parsedAdr?.referencedErrors).toEqual(["GreeterError"])
+
+      // Test inline lists and default proposed status
+      const earsMarkdown = `---
+id: "SPEC-0001"
+enforced_by: ["libs/sample/domain/src/index.ts"]
+spans: ["Sample.greet", 'Sample.farewell']
+services: [GreeterService]
+errors: []
+---
+# EARS Spec
+`
+      const parsedEars = parseGovernanceDocFrontmatter(
+        "docs/specs/0001-spec.md",
+        earsMarkdown
+      )
+      expect(parsedEars).not.toBeNull()
+      expect(parsedEars?.id).toBe("SPEC-0001")
+      expect(parsedEars?.status).toBe("proposed")
+      expect(parsedEars?.enforcedByFiles).toEqual(["libs/sample/domain/src/index.ts"])
+      expect(parsedEars?.existingFiles).toEqual(["libs/sample/domain/src/index.ts"])
+      expect(parsedEars?.referencedSpans).toEqual(["Sample.greet", "Sample.farewell"])
+      expect(parsedEars?.referencedServices).toEqual(["GreeterService"])
+      expect(parsedEars?.referencedErrors).toEqual([])
+
+      // Missing or invalid frontmatter/id
+      expect(parseGovernanceDocFrontmatter("docs/adr/no-fm.md", "# Just MD")).toBeNull()
+      expect(
+        parseGovernanceDocFrontmatter("docs/adr/no-id.md", "---\nstatus: accepted\n---")
+      ).toBeNull()
+      expect(
+        parseGovernanceDocFrontmatter("docs/adr/empty-id.md", "---\nid: ''\n---")
+      ).toBeNull()
+    })
+
+    it("returns clean: true when accepted ADR/Spec references valid files, spans, services, and errors", () => {
+      const graph = buildHarnessGraph({
+        fns: [
+          {
+            qualname: "libs/sample/domain/src/index.ts#greet",
+            spanName: "Sample.greet",
+            packageTag: "domain",
+            file: "libs/sample/domain/src/index.ts",
+            line: 5,
+            successType: "string",
+            isStub: false
+          }
+        ],
+        services: [
+          {
+            tagId: "GreeterService",
+            name: "GreeterService",
+            packageTag: "service",
+            file: "libs/sample/service/src/index.ts"
+          }
+        ],
+        layers: [
+          {
+            qualname: "libs/sample/infra/src/index.ts#GreeterLive",
+            layerKind: "live",
+            packageTag: "infra",
+            file: "libs/sample/infra/src/index.ts"
+          }
+        ],
+        errors: [
+          {
+            errorTag: "GreeterError",
+            file: "libs/sample/contract/src/index.ts"
+          }
+        ],
+        patternDocs: [
+          {
+            slug: "planning",
+            path: "agent-patterns/planning.md",
+            summary: "Planning pattern"
+          }
+        ],
+        requiresService: [
+          {
+            callerQualname: "libs/sample/domain/src/index.ts#greet",
+            tagId: "GreeterService"
+          }
+        ],
+        providesService: [
+          {
+            layerQualname: "libs/sample/infra/src/index.ts#GreeterLive",
+            tagId: "GreeterService"
+          }
+        ],
+        failsWith: [
+          {
+            callerQualname: "libs/sample/domain/src/index.ts#greet",
+            errorTag: "GreeterError"
+          }
+        ]
+      })
+
+      const doc: GovernanceDocReference = {
+        docPath: "docs/adr/0001-greeter.md",
+        id: "ADR-0001",
+        status: "accepted",
+        enforcedByFiles: ["libs/sample/domain/src/index.ts"],
+        existingFiles: ["libs/sample/domain/src/index.ts"],
+        referencedSpans: ["Sample.greet"],
+        referencedServices: ["GreeterService"],
+        referencedErrors: ["GreeterError"]
+      }
+
+      const report = scanGraphEntropy(graph, {
+        expectedPatterns: ["planning", "review", "effect"],
+        governanceDocs: [doc]
+      })
+
+      expect(report.clean).toBe(true)
+      expect(report.findings).toHaveLength(0)
+    })
+
+    it.effect("flags stale-doc-reference when accepted doc references missing elements while ignoring proposed/superseded", () =>
+      Effect.gen(function* () {
+        const graph = buildHarnessGraph({
+          fns: [
+            {
+              qualname: "libs/sample/domain/src/index.ts#greet",
+              spanName: "Sample.greet",
+              packageTag: "domain",
+              file: "libs/sample/domain/src/index.ts",
+              line: 5,
+              successType: "string",
+              isStub: false
+            }
+          ],
+          services: [
+            {
+              tagId: "GreeterService",
+              name: "GreeterService",
+              packageTag: "service",
+              file: "libs/sample/service/src/index.ts"
+            }
+          ],
+          layers: [
+            {
+              qualname: "libs/sample/infra/src/index.ts#GreeterLive",
+              layerKind: "live",
+              packageTag: "infra",
+              file: "libs/sample/infra/src/index.ts"
+            }
+          ],
+          errors: [
+            {
+              errorTag: "GreeterError",
+              file: "libs/sample/contract/src/index.ts"
+            }
+          ],
+          patternDocs: [
+            {
+              slug: "planning",
+              path: "agent-patterns/planning.md",
+              summary: "Planning pattern"
+            }
+          ],
+          requiresService: [
+            {
+              callerQualname: "libs/sample/domain/src/index.ts#greet",
+              tagId: "GreeterService"
+            }
+          ],
+          providesService: [
+            {
+              layerQualname: "libs/sample/infra/src/index.ts#GreeterLive",
+              tagId: "GreeterService"
+            }
+          ],
+          failsWith: [
+            {
+              callerQualname: "libs/sample/domain/src/index.ts#greet",
+              errorTag: "GreeterError"
+            }
+          ]
+        })
+
+        const staleAcceptedDoc: GovernanceDocReference = {
+          docPath: "docs/adr/0002-stale.md",
+          id: "ADR-0002",
+          status: "accepted",
+          enforcedByFiles: ["libs/sample/deleted.ts"],
+          existingFiles: [],
+          referencedSpans: ["Missing.span"],
+          referencedServices: ["MissingService"],
+          referencedErrors: ["MissingError"]
+        }
+
+        const proposedDocWithBrokenRefs: GovernanceDocReference = {
+          docPath: "docs/specs/0001-draft.md",
+          id: "SPEC-0001",
+          status: "proposed",
+          enforcedByFiles: ["libs/sample/draft-nonexistent.ts"],
+          existingFiles: [],
+          referencedSpans: ["Draft.span"],
+          referencedServices: ["DraftService"],
+          referencedErrors: ["DraftError"]
+        }
+
+        const supersededDocWithBrokenRefs: GovernanceDocReference = {
+          docPath: "docs/adr/0000-old.md",
+          id: "ADR-0000",
+          status: "superseded",
+          enforcedByFiles: ["libs/sample/old-nonexistent.ts"],
+          existingFiles: [],
+          referencedSpans: ["Old.span"],
+          referencedServices: ["OldService"],
+          referencedErrors: ["OldError"]
+        }
+
+        const report = yield* decideGraphEntropy({
+          graph,
+          expectedPatterns: ["planning", "review", "effect"],
+          governanceDocs: [
+            staleAcceptedDoc,
+            proposedDocWithBrokenRefs,
+            supersededDocWithBrokenRefs
+          ]
+        })
+
+        expect(report.clean).toBe(false)
+        const staleFindings = report.findings.filter((f) => f.kind === "stale-doc-reference")
+        expect(staleFindings).toHaveLength(4)
+
+        const fileFinding = staleFindings.find(
+          (f) => f.nodeId === "ADR-0002:libs/sample/deleted.ts"
+        )
+        expect(fileFinding).toBeDefined()
+        expect(fileFinding?.message).toContain(
+          'Governance doc "docs/adr/0002-stale.md" (ADR-0002) references non-existent enforced_by file "libs/sample/deleted.ts".'
+        )
+
+        const spanFinding = staleFindings.find((f) => f.nodeId === "ADR-0002:Missing.span")
+        expect(spanFinding).toBeDefined()
+        expect(spanFinding?.message).toContain(
+          'Governance doc "docs/adr/0002-stale.md" (ADR-0002) references non-existent EffectFn span "Missing.span".'
+        )
+
+        const svcFinding = staleFindings.find((f) => f.nodeId === "ADR-0002:MissingService")
+        expect(svcFinding).toBeDefined()
+        expect(svcFinding?.message).toContain(
+          'Governance doc "docs/adr/0002-stale.md" (ADR-0002) references non-existent ServiceTag "MissingService".'
+        )
+
+        const errFinding = staleFindings.find((f) => f.nodeId === "ADR-0002:MissingError")
+        expect(errFinding).toBeDefined()
+        expect(errFinding?.message).toContain(
+          'Governance doc "docs/adr/0002-stale.md" (ADR-0002) references non-existent TaggedError "MissingError".'
+        )
+
+        // Neither proposed nor superseded doc should produce findings
+        expect(staleFindings.some((f) => f.nodeId.startsWith("SPEC-0001"))).toBe(false)
+        expect(staleFindings.some((f) => f.nodeId.startsWith("ADR-0000"))).toBe(false)
+      })
+    )
+
+    it("loads governance docs safely from disk even when folders do not exist", () => {
+      const docs = loadGovernanceDocsFromDisk("/non/existent/repo/root")
+      expect(Array.isArray(docs)).toBe(true)
+      expect(docs).toHaveLength(0)
+
+      const repoRoot = "/home/roan/WebstormProjects/effect-ts-harness"
+      const repoDocs = loadGovernanceDocsFromDisk(repoRoot)
+      expect(Array.isArray(repoDocs)).toBe(true)
+    })
+
+    it("discovers co-located and global governance docs while ignoring README.md and TEMPLATE.md", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "harness-gov-docs-"))
+      try {
+        mkdirSync(join(tempDir, "docs", "adr"), { recursive: true })
+        mkdirSync(join(tempDir, "docs", "specs"), { recursive: true })
+        mkdirSync(join(tempDir, "libs", "es", "docs", "adr"), { recursive: true })
+        mkdirSync(join(tempDir, "libs", "es", "docs", "specs"), { recursive: true })
+
+        writeFileSync(
+          join(tempDir, "docs", "adr", "0001-monorepo-taxonomy.md"),
+          `---
+id: ADR-0001
+status: accepted
+---
+# Monorepo Taxonomy
+`
+        )
+        writeFileSync(
+          join(tempDir, "libs", "es", "docs", "adr", "0001-do-event-store.md"),
+          `---
+id: ADR-ES-0001
+status: accepted
+---
+# DO Event Store
+`
+        )
+        writeFileSync(
+          join(tempDir, "libs", "es", "docs", "specs", "2026-10-27-aggregate-root.md"),
+          `---
+id: SPEC-ES-0001
+status: proposed
+---
+# Aggregate Root Spec
+`
+        )
+
+        writeFileSync(
+          join(tempDir, "docs", "adr", "README.md"),
+          `---
+id: ADR-README
+status: accepted
+---
+# README
+`
+        )
+        writeFileSync(
+          join(tempDir, "docs", "adr", "TEMPLATE.md"),
+          `---
+id: ADR-TEMPLATE
+status: accepted
+---
+# TEMPLATE
+`
+        )
+        writeFileSync(
+          join(tempDir, "docs", "specs", "README.md"),
+          `---
+id: SPEC-README
+status: accepted
+---
+# README
+`
+        )
+        writeFileSync(
+          join(tempDir, "libs", "es", "docs", "adr", "README.md"),
+          `---
+id: LIB-ADR-README
+status: accepted
+---
+# README
+`
+        )
+        writeFileSync(
+          join(tempDir, "libs", "es", "docs", "specs", "TEMPLATE.md"),
+          `---
+id: LIB-SPEC-TEMPLATE
+status: accepted
+---
+# TEMPLATE
+`
+        )
+
+        const docs = loadGovernanceDocsFromDisk(tempDir)
+        expect(docs).toHaveLength(3)
+
+        const paths = docs.map((d) => d.docPath)
+        expect(paths).toEqual([
+          "docs/adr/0001-monorepo-taxonomy.md",
+          "libs/es/docs/adr/0001-do-event-store.md",
+          "libs/es/docs/specs/2026-10-27-aggregate-root.md"
+        ])
+
+        const globalAdr = docs.find((d) => d.docPath === "docs/adr/0001-monorepo-taxonomy.md")
+        expect(globalAdr).toBeDefined()
+        expect(globalAdr?.id).toBe("ADR-0001")
+        expect(globalAdr?.status).toBe("accepted")
+
+        const colocatedAdr = docs.find(
+          (d) => d.docPath === "libs/es/docs/adr/0001-do-event-store.md"
+        )
+        expect(colocatedAdr).toBeDefined()
+        expect(colocatedAdr?.id).toBe("ADR-ES-0001")
+        expect(colocatedAdr?.status).toBe("accepted")
+
+        const colocatedSpec = docs.find(
+          (d) => d.docPath === "libs/es/docs/specs/2026-10-27-aggregate-root.md"
+        )
+        expect(colocatedSpec).toBeDefined()
+        expect(colocatedSpec?.id).toBe("SPEC-ES-0001")
+        expect(colocatedSpec?.status).toBe("proposed")
+
+        expect(paths.some((p) => p.endsWith("README.md"))).toBe(false)
+        expect(paths.some((p) => p.endsWith("TEMPLATE.md"))).toBe(false)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe("decideMigrationSafety / checkMigrationSqlSafety", () => {

@@ -1,6 +1,8 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { Effect, Option } from "effect"
 import * as Graph from "effect/Graph"
-import type { HarnessGraph } from "@harness/graph"
+import type { GovernanceDocStatus, HarnessGraph } from "@harness/graph"
 
 export type GcFindingKind =
   | "unused-service"
@@ -9,6 +11,7 @@ export type GcFindingKind =
   | "orphan-effect-fn"
   | "missing-pattern-doc"
   | "untested-effect-fn"
+  | "stale-doc-reference"
 
 export interface GcFinding {
   readonly kind: GcFindingKind
@@ -21,10 +24,24 @@ export interface GcReport {
   readonly findings: ReadonlyArray<GcFinding>
 }
 
+export type { GovernanceDocStatus }
+
+export interface GovernanceDocReference {
+  readonly docPath: string
+  readonly id: string
+  readonly status: GovernanceDocStatus
+  readonly enforcedByFiles?: ReadonlyArray<string> | undefined
+  readonly existingFiles?: ReadonlyArray<string> | undefined
+  readonly referencedSpans?: ReadonlyArray<string> | undefined
+  readonly referencedServices?: ReadonlyArray<string> | undefined
+  readonly referencedErrors?: ReadonlyArray<string> | undefined
+}
+
 export interface GraphEntropyInput {
   readonly graph: HarnessGraph
   readonly expectedPatterns?: ReadonlyArray<string> | undefined
   readonly checkUntestedDomainFns?: boolean | undefined
+  readonly governanceDocs?: ReadonlyArray<GovernanceDocReference> | undefined
 }
 
 const IGNORED_SERVICES = new Set([
@@ -198,6 +215,98 @@ export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
     }
   }
 
+  // 6. stale-doc-reference
+  const docRefs: Array<GovernanceDocReference> = []
+  const seenDocIds = new Set<string>()
+  if (input.governanceDocs !== undefined && input.governanceDocs.length > 0) {
+    for (const doc of input.governanceDocs) {
+      docRefs.push(doc)
+      seenDocIds.add(doc.id)
+    }
+  }
+
+  for (const [, node] of Graph.nodes(g)) {
+    if ((node._tag === "AdrDoc" || node._tag === "EarsSpec") && !seenDocIds.has(node.id)) {
+      seenDocIds.add(node.id)
+      docRefs.push({
+        docPath: node.path,
+        id: node.id,
+        status: node.status,
+        enforcedByFiles: node.enforcedByFiles,
+        referencedSpans: node.referencedSpans,
+        referencedServices: node.referencedServices,
+        referencedErrors: node.referencedErrors
+      })
+    }
+  }
+
+  if (docRefs.length > 0) {
+    const knownSpans = new Set<string>()
+    const knownServices = new Set<string>()
+    const knownErrors = new Set<string>()
+
+    for (const [, node] of Graph.nodes(g)) {
+      if (node._tag === "EffectFn") {
+        knownSpans.add(node.spanName)
+        knownSpans.add(node.qualname)
+      } else if (node._tag === "ServiceTag") {
+        knownServices.add(node.tagId)
+        knownServices.add(node.name)
+      } else if (node._tag === "TaggedError") {
+        knownErrors.add(node.errorTag)
+      }
+    }
+
+    for (const doc of docRefs) {
+      if (doc.status !== "accepted") {
+        continue
+      }
+
+      if (doc.enforcedByFiles !== undefined && doc.existingFiles !== undefined) {
+        const existingSet = new Set(doc.existingFiles)
+        for (const file of doc.enforcedByFiles) {
+          if (!existingSet.has(file)) {
+            findings.push({
+              kind: "stale-doc-reference",
+              nodeId: `${doc.id}:${file}`,
+              message: `Governance doc "${doc.docPath}" (${doc.id}) references non-existent enforced_by file "${file}".`
+            })
+          }
+        }
+      }
+
+      for (const span of doc.referencedSpans ?? []) {
+        if (!knownSpans.has(span)) {
+          findings.push({
+            kind: "stale-doc-reference",
+            nodeId: `${doc.id}:${span}`,
+            message: `Governance doc "${doc.docPath}" (${doc.id}) references non-existent EffectFn span "${span}".`
+          })
+        }
+      }
+
+      for (const svc of doc.referencedServices ?? []) {
+        if (!knownServices.has(svc)) {
+          findings.push({
+            kind: "stale-doc-reference",
+            nodeId: `${doc.id}:${svc}`,
+            message: `Governance doc "${doc.docPath}" (${doc.id}) references non-existent ServiceTag "${svc}".`
+          })
+        }
+      }
+
+      for (const err of doc.referencedErrors ?? []) {
+        if (!knownErrors.has(err)) {
+          findings.push({
+            kind: "stale-doc-reference",
+            nodeId: `${doc.id}:${err}`,
+            message: `Governance doc "${doc.docPath}" (${doc.id}) references non-existent TaggedError "${err}".`
+          })
+        }
+      }
+    }
+  }
+
   return {
     clean: findings.length === 0,
     findings
@@ -209,12 +318,216 @@ export const scanGraphEntropy = (
   options?: {
     readonly expectedPatterns?: ReadonlyArray<string> | undefined
     readonly checkUntestedDomainFns?: boolean | undefined
+    readonly governanceDocs?: ReadonlyArray<GovernanceDocReference> | undefined
   }
 ): GcReport =>
   Effect.runSync(
     decideGraphEntropy({
       graph,
       expectedPatterns: options?.expectedPatterns,
-      checkUntestedDomainFns: options?.checkUntestedDomainFns
+      checkUntestedDomainFns: options?.checkUntestedDomainFns,
+      governanceDocs: options?.governanceDocs
     })
   )
+
+export const parseGovernanceDocFrontmatter = (
+  docPath: string,
+  markdown: string,
+  existingFileCheck?: (relPath: string) => boolean
+): GovernanceDocReference | null => {
+  const normalized = markdown.replace(/^\uFEFF/, "")
+  const match = normalized.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  if (!match || match[1] === undefined) {
+    return null
+  }
+
+  const yamlContent = match[1]
+  const lines = yamlContent.split(/\r?\n/)
+
+  const scalars = new Map<string, string>()
+  const lists = new Map<string, Array<string>>()
+
+  let currentListKey: string | null = null
+
+  const stripQuotes = (val: string): string => {
+    let trimmed = val.trim()
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      return trimmed.slice(1, -1).trim()
+    }
+    const hashIdx = trimmed.indexOf("#")
+    if (hashIdx !== -1) {
+      trimmed = trimmed.slice(0, hashIdx).trim()
+    }
+    return trimmed
+  }
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim()
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      continue
+    }
+
+    const listItemMatch = rawLine.match(/^\s*-\s*(.*)$/)
+    if (listItemMatch && currentListKey !== null) {
+      const item = stripQuotes(listItemMatch[1] ?? "")
+      if (item.length > 0) {
+        const list = lists.get(currentListKey)
+        if (list) {
+          list.push(item)
+        }
+      }
+      continue
+    }
+
+    currentListKey = null
+
+    const keyValMatch = rawLine.match(/^([a-zA-Z0-9_-]+)\s*:(.*)$/)
+    if (keyValMatch) {
+      const key = keyValMatch[1]!.trim()
+      const rest = keyValMatch[2]!.trim()
+
+      if (rest.startsWith("[") && rest.endsWith("]")) {
+        const inner = rest.slice(1, -1).trim()
+        const items =
+          inner.length === 0
+            ? []
+            : inner
+                .split(",")
+                .map(stripQuotes)
+                .filter((s) => s.length > 0)
+        lists.set(key, items)
+      } else if (rest === "") {
+        lists.set(key, [])
+        currentListKey = key
+      } else {
+        scalars.set(key, stripQuotes(rest))
+      }
+    }
+  }
+
+  const id = scalars.get("id")
+  if (!id || id.trim() === "") {
+    return null
+  }
+
+  const rawStatus = scalars.get("status")
+  const status: GovernanceDocStatus =
+    rawStatus === "accepted" ||
+    rawStatus === "proposed" ||
+    rawStatus === "superseded" ||
+    rawStatus === "deprecated"
+      ? rawStatus
+      : "proposed"
+
+  const enforcedByRaw = lists.get("enforced_by")
+  const enforcedByFiles: ReadonlyArray<string> | undefined = enforcedByRaw
+  const existingFiles: ReadonlyArray<string> | undefined =
+    enforcedByRaw !== undefined
+      ? existingFileCheck !== undefined
+        ? enforcedByRaw.filter(existingFileCheck)
+        : [...enforcedByRaw]
+      : undefined
+
+  const referencedSpans = lists.get("spans")
+  const referencedServices = lists.get("services")
+  const referencedErrors = lists.get("errors")
+
+  return {
+    docPath,
+    id,
+    status,
+    ...(enforcedByFiles !== undefined ? { enforcedByFiles, existingFiles } : {}),
+    ...(referencedSpans !== undefined ? { referencedSpans } : {}),
+    ...(referencedServices !== undefined ? { referencedServices } : {}),
+    ...(referencedErrors !== undefined ? { referencedErrors } : {})
+  }
+}
+
+export const loadGovernanceDocsFromDisk = (
+  repoRoot: string
+): ReadonlyArray<GovernanceDocReference> => {
+  const candidateRelDirs: Array<string> = ["docs/adr", "docs/specs"]
+
+  const listSubdirectories = (parentRel: string): ReadonlyArray<string> => {
+    const parentPath = join(repoRoot, parentRel)
+    return Effect.runSync(
+      Effect.try({
+        try: () => {
+          if (!existsSync(parentPath)) {
+            return []
+          }
+          return readdirSync(parentPath, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort((a, b) => a.localeCompare(b))
+        },
+        catch: () => []
+      }).pipe(Effect.orElseSucceed(() => []))
+    )
+  }
+
+  const libScopes = listSubdirectories("libs")
+  for (const scope of libScopes) {
+    candidateRelDirs.push(`libs/${scope}/docs/adr`)
+    candidateRelDirs.push(`libs/${scope}/docs/specs`)
+  }
+
+  const appNames = listSubdirectories("apps")
+  for (const app of appNames) {
+    candidateRelDirs.push(`apps/${app}/docs/adr`)
+    candidateRelDirs.push(`apps/${app}/docs/specs`)
+  }
+
+  const results: Array<GovernanceDocReference> = []
+
+  for (const relDir of candidateRelDirs) {
+    const fullDir = join(repoRoot, relDir)
+    if (!existsSync(fullDir)) {
+      continue
+    }
+
+    const entries = Effect.runSync(
+      Effect.try({
+        try: () => readdirSync(fullDir, { withFileTypes: true }),
+        catch: () => []
+      }).pipe(Effect.orElseSucceed(() => []))
+    )
+
+    const files = entries
+      .filter(
+        (entry) =>
+          entry.isFile() &&
+          entry.name.endsWith(".md") &&
+          entry.name !== "README.md" &&
+          entry.name !== "TEMPLATE.md"
+      )
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b))
+
+    for (const file of files) {
+      const relDocPath = `${relDir}/${file}`
+      const fullPath = join(repoRoot, relDocPath)
+      const content = Effect.runSync(
+        Effect.try({
+          try: () => readFileSync(fullPath, "utf8"),
+          catch: () => ""
+        }).pipe(Effect.orElseSucceed(() => ""))
+      )
+
+      const parsed = parseGovernanceDocFrontmatter(
+        `${relDir}/${file}`,
+        content,
+        (rel) => existsSync(join(repoRoot, rel))
+      )
+
+      if (parsed !== null) {
+        results.push(parsed)
+      }
+    }
+  }
+
+  return results
+}

@@ -51,6 +51,33 @@ export interface PatternDocNode {
   readonly summary: string
 }
 
+export type GovernanceDocStatus = "accepted" | "proposed" | "superseded" | "deprecated"
+export type GovernedTargetKind = "EffectFn" | "ServiceTag" | "TaggedError"
+
+export interface AdrDocNode {
+  readonly _tag: "AdrDoc"
+  readonly id: string
+  readonly title: string
+  readonly status: GovernanceDocStatus
+  readonly path: string
+  readonly enforcedByFiles: ReadonlyArray<string>
+  readonly referencedSpans: ReadonlyArray<string>
+  readonly referencedServices: ReadonlyArray<string>
+  readonly referencedErrors: ReadonlyArray<string>
+}
+
+export interface EarsSpecNode {
+  readonly _tag: "EarsSpec"
+  readonly id: string
+  readonly title: string
+  readonly status: GovernanceDocStatus
+  readonly path: string
+  readonly enforcedByFiles: ReadonlyArray<string>
+  readonly referencedSpans: ReadonlyArray<string>
+  readonly referencedServices: ReadonlyArray<string>
+  readonly referencedErrors: ReadonlyArray<string>
+}
+
 export type HarnessNode =
   | EffectFnNode
   | ServiceTagNode
@@ -58,6 +85,8 @@ export type HarnessNode =
   | TaggedErrorNode
   | VitestCaseNode
   | PatternDocNode
+  | AdrDocNode
+  | EarsSpecNode
 
 export interface RequiresServiceEdge {
   readonly _tag: "RequiresService"
@@ -99,6 +128,20 @@ export interface ExercisesSpanEdge {
   readonly receiverLayer: string | null
 }
 
+export interface GovernsSymbolEdge {
+  readonly _tag: "GovernsSymbol"
+  readonly adrId: string
+  readonly targetKey: string
+  readonly targetKind: GovernedTargetKind
+}
+
+export interface SpecifiesSymbolEdge {
+  readonly _tag: "SpecifiesSymbol"
+  readonly specId: string
+  readonly targetKey: string
+  readonly targetKind: GovernedTargetKind
+}
+
 export type HarnessEdge =
   | RequiresServiceEdge
   | FailsWithEdge
@@ -106,6 +149,8 @@ export type HarnessEdge =
   | LayerRequiresEdge
   | TracedCallEdge
   | ExercisesSpanEdge
+  | GovernsSymbolEdge
+  | SpecifiesSymbolEdge
 
 export interface BuildHarnessGraphInput {
   readonly fns?: ReadonlyArray<Omit<EffectFnNode, "_tag"> | EffectFnNode>
@@ -114,6 +159,18 @@ export interface BuildHarnessGraphInput {
   readonly errors?: ReadonlyArray<Omit<TaggedErrorNode, "_tag"> | TaggedErrorNode>
   readonly tests?: ReadonlyArray<Omit<VitestCaseNode, "_tag"> | VitestCaseNode>
   readonly patternDocs?: ReadonlyArray<Omit<PatternDocNode, "_tag"> | PatternDocNode>
+  readonly adrDocs?: ReadonlyArray<Omit<AdrDocNode, "_tag"> | AdrDocNode>
+  readonly earsSpecs?: ReadonlyArray<Omit<EarsSpecNode, "_tag"> | EarsSpecNode>
+  readonly governsSymbols?: ReadonlyArray<{
+    readonly adrId: string
+    readonly targetKey: string
+    readonly targetKind: GovernedTargetKind
+  }>
+  readonly specifiesSymbols?: ReadonlyArray<{
+    readonly specId: string
+    readonly targetKey: string
+    readonly targetKind: GovernedTargetKind
+  }>
   readonly requiresService?: ReadonlyArray<
     | { readonly callerQualname: string; readonly tagId: string }
     | { readonly fnQualname: string; readonly tagId: string }
@@ -163,6 +220,10 @@ export const getNodeKey = (node: HarnessNode): string => {
       return node.testId
     case "PatternDoc":
       return node.slug
+    case "AdrDoc":
+      return node.id
+    case "EarsSpec":
+      return node.id
   }
 }
 
@@ -180,6 +241,10 @@ export const getEdgeKey = (edge: HarnessEdge): string => {
       return `TracedCall:${edge.callerQualname}->${edge.calleeQualname}`
     case "ExercisesSpan":
       return `ExercisesSpan:${edge.testId}->${edge.calleeQualname}`
+    case "GovernsSymbol":
+      return `GovernsSymbol:${edge.adrId}->${edge.targetKey}`
+    case "SpecifiesSymbol":
+      return `SpecifiesSymbol:${edge.specId}->${edge.targetKey}`
   }
 }
 
