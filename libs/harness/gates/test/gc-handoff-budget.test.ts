@@ -10,6 +10,7 @@ import {
   checkMigrationSqlSafety,
   checkSpanBudgets,
   classifyFileWrite,
+  decideAdrDocQuality,
   decideEarsSpecQuality,
   decideGraphEntropy,
   decideLoopThrashing,
@@ -20,6 +21,7 @@ import {
   diffPlanAndImplGraphs,
   discoverDomainMutants,
   evaluateMutationOutcomes,
+  lintAdrDocMarkdown,
   lintEarsSpecMarkdown,
   loadGovernanceDocsFromDisk,
   parseGovernanceDocFrontmatter,
@@ -1411,6 +1413,352 @@ status: accepted
           expect(report.clean).toBe(true)
           expect(report.requirementCount).toBe(requirementCount)
           expect(report.requirements).toHaveLength(requirementCount)
+          expect(report.findings).toHaveLength(0)
+        })
+    )
+  })
+
+  describe("decideAdrDocQuality / lintAdrDocMarkdown", () => {
+    const validCanonicalAdr = `---
+id: test:ADR-0001
+title: Deterministic ADR Linting
+status: accepted
+date: 2026-10-27
+enforced_by:
+  - libs/harness/gates/src/adr-lint.ts
+spans:
+  - AdrDocLint.decide
+---
+
+# test:ADR-0001: Deterministic ADR Linting
+
+## Context and Problem Statement
+
+ADR documents need to follow canonical MADR format to ensure architectural integrity.
+1. Documents drift without linter.
+2. Unfilled placeholders slip into production.
+
+We need automated mechanical gating.
+
+## Decision Drivers
+
+* Guarantee canonical 6-section MADR structure across all ADRs.
+* Deterministically verify frontmatter, chosen options, and rejected alternatives.
+
+## Considered Options
+
+* **Option 1:** Pure TypeScript AST & Markdown Decider.
+* **Option 2:** Unstructured Markdown without Linting.
+
+## Decision Outcome
+
+**Chosen option:** "Option 1" because deterministic gates provide instant mechanical feedback.
+
+## Rejected Alternatives
+
+### 1 · Unstructured Markdown without Linting
+- **Why rejected:** Causes documentation drift and broken references across repos.
+
+## Consequences and Enforcement
+
+### Positive Consequences
+- ADRs remain consistently structured and parseable.
+
+### Negative Consequences and Trade-offs
+- Authors must adhere to strict markdown sections.
+
+### Deterministic Enforcement
+| Rule | Enforced By | Gate / Mechanism | Governed Symbols |
+| --- | --- | --- | --- |
+| Canonical MADR | libs/harness/gates/src/adr-lint.ts | AdrDocLint.decide | \`AdrDocLint.decide\` |
+`
+
+    it("accepts valid canonical ADR documents", () => {
+      const report = lintAdrDocMarkdown("docs/adr/test.md", validCanonicalAdr)
+      expect(report.clean).toBe(true)
+      expect(report.findings).toHaveLength(0)
+
+      let root = process.cwd()
+      while (root !== dirname(root)) {
+        if (existsSync(join(root, "pnpm-workspace.yaml"))) {
+          break
+        }
+        root = dirname(root)
+      }
+
+      const harnessAdr = readFileSync(
+        join(root, "libs/harness/docs/adr/0001-deterministic-gates-and-plan-as-code.md"),
+        "utf8"
+      )
+      const harnessReport = lintAdrDocMarkdown(
+        "libs/harness/docs/adr/0001-deterministic-gates-and-plan-as-code.md",
+        harnessAdr
+      )
+      expect(harnessReport.clean).toBe(true)
+      expect(harnessReport.findings).toHaveLength(0)
+
+      const sampleAdr = readFileSync(
+        join(root, "libs/sample/docs/adr/0001-cloudflare-d1-do-sqlite-and-traceparent-boundaries.md"),
+        "utf8"
+      )
+      const sampleReport = lintAdrDocMarkdown(
+        "libs/sample/docs/adr/0001-cloudflare-d1-do-sqlite-and-traceparent-boundaries.md",
+        sampleAdr
+      )
+      expect(sampleReport.clean).toBe(true)
+      expect(sampleReport.findings).toHaveLength(0)
+    })
+
+    it("rejects invalid frontmatter (missing enforced_by, missing symbols, superseded without superseded_by)", () => {
+      // 1. Missing frontmatter entirely
+      const noFmReport = lintAdrDocMarkdown("test.md", "# No Frontmatter")
+      expect(noFmReport.clean).toBe(false)
+      expect(noFmReport.findings.some((f) => f.kind === "adr-frontmatter-invalid")).toBe(true)
+
+      // 2. Missing enforced_by
+      const noEnforcedMd = `---
+id: test:ADR-0001
+title: Test
+status: accepted
+date: 2026-10-27
+spans:
+  - AdrDocLint.decide
+---
+`
+      const noEnforcedReport = lintAdrDocMarkdown("test.md", noEnforcedMd)
+      expect(noEnforcedReport.clean).toBe(false)
+      expect(
+        noEnforcedReport.findings.some(
+          (f) => f.kind === "adr-frontmatter-invalid" && f.message.includes("enforced_by")
+        )
+      ).toBe(true)
+
+      // 3. Missing governed symbols
+      const noSymbolsMd = `---
+id: test:ADR-0001
+title: Test
+status: accepted
+date: 2026-10-27
+enforced_by:
+  - some/file.ts
+---
+`
+      const noSymbolsReport = lintAdrDocMarkdown("test.md", noSymbolsMd)
+      expect(noSymbolsReport.clean).toBe(false)
+      expect(
+        noSymbolsReport.findings.some(
+          (f) => f.kind === "adr-frontmatter-invalid" && f.message.includes("govern")
+        )
+      ).toBe(true)
+
+      // 4. Superseded without superseded_by
+      const supersededMd = `---
+id: test:ADR-0001
+title: Test
+status: superseded
+date: 2026-10-27
+enforced_by:
+  - some/file.ts
+spans:
+  - AdrDocLint.decide
+---
+`
+      const supersededReport = lintAdrDocMarkdown("test.md", supersededMd)
+      expect(supersededReport.clean).toBe(false)
+      expect(
+        supersededReport.findings.some(
+          (f) => f.kind === "adr-frontmatter-invalid" && f.message.includes("superseded_by")
+        )
+      ).toBe(true)
+    })
+
+    it("rejects missing or out-of-order canonical sections", () => {
+      // Missing section
+      const missingSectionMd = validCanonicalAdr.replace(
+        "## Decision Drivers\n\n* Guarantee canonical 6-section MADR structure across all ADRs.\n* Deterministically verify frontmatter, chosen options, and rejected alternatives.",
+        ""
+      )
+      const missingReport = lintAdrDocMarkdown("test.md", missingSectionMd)
+      expect(missingReport.clean).toBe(false)
+      expect(
+        missingReport.findings.some(
+          (f) => f.kind === "adr-section-structure" && f.message.includes("Decision Drivers")
+        )
+      ).toBe(true)
+
+      // Out of order sections
+      const outOfOrderMd = validCanonicalAdr.replace(
+        "## Decision Drivers",
+        "## TEMP_MARKER"
+      ).replace(
+        "## Considered Options",
+        "## Decision Drivers"
+      ).replace(
+        "## TEMP_MARKER",
+        "## Considered Options"
+      )
+      const outOfOrderReport = lintAdrDocMarkdown("test.md", outOfOrderMd)
+      expect(outOfOrderReport.clean).toBe(false)
+      expect(
+        outOfOrderReport.findings.some(
+          (f) => f.kind === "adr-section-structure" && f.message.includes("out of order")
+        )
+      ).toBe(true)
+    })
+
+    it("rejects missing chosen option in Decision Outcome", () => {
+      const noChosenMd = validCanonicalAdr.replace(
+        '**Chosen option:** "Option 1" because deterministic gates provide instant mechanical feedback.',
+        "We chose Option 1 after careful evaluation."
+      )
+      const report = lintAdrDocMarkdown("test.md", noChosenMd)
+      expect(report.clean).toBe(false)
+      expect(report.findings.some((f) => f.kind === "adr-missing-chosen-option")).toBe(true)
+    })
+
+    it("rejects malformed rejected alternatives (missing ### 1 · or missing **Why rejected:**)", () => {
+      // Missing ### 1 · subsection
+      const noSubMd = validCanonicalAdr.replace(
+        "### 1 · Unstructured Markdown without Linting\n- **Why rejected:** Causes documentation drift and broken references across repos.",
+        "We considered unstructured markdown but didn't write it up."
+      )
+      const noSubReport = lintAdrDocMarkdown("test.md", noSubMd)
+      expect(noSubReport.clean).toBe(false)
+      expect(
+        noSubReport.findings.some(
+          (f) => f.kind === "adr-rejected-alternative-structure"
+        )
+      ).toBe(true)
+
+      // Missing **Why rejected:**
+      const noWhyMd = validCanonicalAdr.replace(
+        "**Why rejected:**",
+        "Reason for rejection:"
+      )
+      const noWhyReport = lintAdrDocMarkdown("test.md", noWhyMd)
+      expect(noWhyReport.clean).toBe(false)
+      expect(
+        noWhyReport.findings.some(
+          (f) => f.kind === "adr-rejected-alternative-structure" && f.message.includes("Why rejected")
+        )
+      ).toBe(true)
+    })
+
+    it("rejects missing enforcement table under Consequences and Enforcement", () => {
+      const noTableMd = validCanonicalAdr.replace(
+        /\| Rule \|[\s\S]*\| `AdrDocLint\.decide` \|/,
+        "Enforcement is handled through code review."
+      )
+      const report = lintAdrDocMarkdown("test.md", noTableMd)
+      expect(report.clean).toBe(false)
+      expect(
+        report.findings.some((f) => f.kind === "adr-missing-enforcement-table")
+      ).toBe(true)
+    })
+
+    it.effect("flags adr-doc-lint in decideGraphEntropy when governance doc has ADR violations", () =>
+      Effect.gen(function* () {
+        const graph = buildHarnessGraph({})
+        const report = yield* decideGraphEntropy({
+          graph,
+          governanceDocs: [
+            {
+              docPath: "libs/sample/docs/adr/0002-broken.md",
+              id: "sample:ADR-0002",
+              status: "accepted",
+              markdown: "# Broken ADR\n\nNo frontmatter here."
+            }
+          ]
+        })
+        expect(report.clean).toBe(false)
+        const finding = report.findings.find((f) => f.kind === "adr-doc-lint")
+        expect(finding).toBeDefined()
+        expect(finding?.nodeId).toBe("sample:ADR-0002")
+        expect(finding?.message).toContain("adr-frontmatter-invalid")
+      })
+    )
+
+    it.effect.prop(
+      "AdrDocLint.decide: validates canonical ADR with N rejected alternatives and M drivers cleanly",
+      {
+        rejectedCount: Schema.Int.check(
+          Schema.isBetween({ minimum: 1, maximum: 4 })
+        ),
+        driverCount: Schema.Int.check(
+          Schema.isBetween({ minimum: 2, maximum: 5 })
+        )
+      },
+      ({ rejectedCount, driverCount }) =>
+        Effect.gen(function* () {
+          const drivers = Array.from(
+            { length: driverCount },
+            (_, i) => `* Driver requirement ${i + 1} for architectural compliance`
+          ).join("\n")
+
+          const options = Array.from(
+            { length: rejectedCount + 1 },
+            (_, i) => `* **Option ${i + 1}:** Approach ${i + 1}`
+          ).join("\n")
+
+          const rejectedAlternatives = Array.from(
+            { length: rejectedCount },
+            (_, i) =>
+              `### ${i + 1} · Option ${i + 2}\n- **Why rejected:** Reasons for rejecting option ${i + 2}.`
+          ).join("\n\n")
+
+          const md = `---
+id: test:ADR-0001
+title: Test Architectural Decision Record
+status: accepted
+date: 2026-10-27
+enforced_by:
+  - libs/harness/gates/src/adr-lint.ts
+spans:
+  - AdrDocLint.decide
+---
+
+# test:ADR-0001: Test Architectural Decision Record
+
+## Context and Problem Statement
+
+Context and problem statement details here.
+
+## Decision Drivers
+
+${drivers}
+
+## Considered Options
+
+${options}
+
+## Decision Outcome
+
+**Chosen option:** "Option 1" because it satisfies all drivers.
+
+## Rejected Alternatives
+
+${rejectedAlternatives}
+
+## Consequences and Enforcement
+
+### Positive Consequences
+- Positive outcome 1
+
+### Negative Consequences and Trade-offs
+- Trade-off 1
+
+### Deterministic Enforcement
+| Rule | Enforced By | Gate / Mechanism | Governed Symbols |
+| --- | --- | --- | --- |
+| Lint ADRs | libs/harness/gates/src/adr-lint.ts | AdrDocLint.decide | \`AdrDocLint.decide\` |
+`
+
+          const report = yield* decideAdrDocQuality({
+            docPath: "docs/adr/test-0001.md",
+            markdown: md
+          })
+
+          expect(report.clean).toBe(true)
           expect(report.findings).toHaveLength(0)
         })
     )

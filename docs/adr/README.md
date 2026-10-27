@@ -23,7 +23,7 @@ Pre udržateľnosť veľkého monorepa uplatňujeme pravidlo ko-lokácie:
 
 ## 2. Formát ADR (MADR s typovo overiteľným frontmatterom)
 
-Každý záznam využíva štandardizovaný formát MADR (Markdown Architecture Decision Records) obohatený o štruktúrovaný YAML frontmatter:
+Každý záznam využíva štandardizovaný formát MADR (Markdown Architecture Decision Records) obohatený o štruktúrovaný YAML frontmatter a kanonickú anglickú štruktúru 6 sekcií:
 
 ```yaml
 ---
@@ -45,21 +45,102 @@ errors:
 ---
 ```
 
-### Povinné polia frontmatteru:
+### Povinné polia frontmatteru a parser-safety:
 - **`id`**: Unikátny identifikátor v tvare `<scope>:ADR-NNNN` pre domény alebo `ADR-NNNN` pre globálne ADR (napr. `harness:ADR-0001`, `sample:ADR-0001`).
-- **`title`**: Jednoriadkové zhrnutie prijatého rozhodnutia.
-- **`status`**: Životný cyklus rozhodnutia (`proposed`, `accepted`, `superseded`, `deprecated`).
+- **`title`**: Jednoriadkové zhrnutie prijatého rozhodnutia (krátka menná fráza).
+- **`status`**: Životný cyklus rozhodnutia (`proposed`, `accepted`, `superseded`, `deprecated`). Ak je status `superseded`, frontmatter **musí** obsahovať pole `superseded_by: <scope>:ADR-MMMM`.
 - **`date`**: Dátum prijatia vo formáte ISO (`YYYY-MM-DD`).
-- **`enforced_by`**: Zoznam relatívnych ciest k súborom v repozitári, ktoré rozhodnutie vynucujú (napr. AST linter pravidlá, brány, testy, pattern recepty).
-- **`spans`** *(voliteľné)*: Zoznam spanov `Effect.fn`, ktorých sa rozhodnutie priamo týka.
-- **`services`** *(voliteľné)*: Zoznam servisných tagov (`Context.Service`), ktorých rozhrania alebo zmluvy rozhodnutie upravuje.
-- **`errors`** *(voliteľné)*: Zoznam `TaggedError` tried spojených s rozhodnutím.
+- **`enforced_by`**: Zoznam relatívnych ciest k súborom v repozitári, ktoré rozhodnutie vynucujú (minimálne 1 existujúci súbor).
+- **Symboly grafu (`spans`, `services`, `errors`)**: Minimálne jedno z polí `spans`, `services` alebo `errors` musí byť definované a neprázdne, čím sa vytvoria hrany `GovernsSymbol` do `HarnessGraph` a Omnigraphu.
+- **Pravidlo parser-safety**: Hodnoty obsahujúce dvojbodku s medzerou (`: `) alebo mriežku (` #`) musia byť obalené v úvodzovkách; oddeľovače frontmatteru musia tvoriť presné riadky `---`.
+
+### 2.1 Kanonická 6-sekčná Štruktúra ADR (Canonical English Template)
+
+Každé ADR musí obsahovať presne 6 hlavných sekcií druhej úrovne (`##`) v tomto nemennom poradí (overované cez `AdrDocLint.decide`):
+
+1. `## Context and Problem Statement` (1–2 odseky popisujúce runtime kontext a čo zlyhá, ak rozhodnutie neurobíme)
+2. `## Decision Drivers` (minimálne 2 odrážky `* ...` pomenúvajúce kľúčové obmedzenia)
+3. `## Considered Options` (minimálne 2 položky `* **Option N:** ...`)
+4. `## Decision Outcome` (otvára sa presnou frázou `**Chosen option:** "<Option Name>"` nasledovanou architektonickými pravidlami)
+5. `## Rejected Alternatives` (číslované podsekcie `### N · <Option Name>` so stredovou bodkou `·`, každá otváraná frázou `**Why rejected:** <dôvod>`)
+6. `## Consequences and Enforcement` (obsahuje `### Positive Consequences`, `### Negative Consequences and Trade-offs` a tabuľku `### Deterministic Enforcement`)
+
+```markdown
+---
+id: <scope>:ADR-NNNN
+title: Short Noun Phrase Stating the Architectural Decision
+status: accepted
+date: YYYY-MM-DD
+enforced_by:
+  - libs/<scope>/infra/src/specific-enforcer.ts
+  - tools/oxlint/syntax-bans.js
+spans:
+  - DomainSymbol.decide
+services:
+  - SpecificService
+errors:
+  - SpecificDomainError
+---
+
+# <scope>:ADR-NNNN: Short Noun Phrase Stating the Architectural Decision
+
+## Context and Problem Statement
+
+First paragraph describing the runtime environment, business context, and operational forces currently at play. Clearly state the architectural problem and the tension between competing requirements.
+
+Second paragraph explaining what breaks, degrades, or incurs unacceptable risk if this decision is left unresolved or left to individual engineer discretion.
+
+## Decision Drivers
+
+* Non-negotiable driver or constraint 1 (e.g. latency budget, cloud runtime limitation, memory footprint)
+* Non-negotiable driver or constraint 2 (e.g. data consistency requirement, transactional boundary, type-safety guarantee)
+
+## Considered Options
+
+* **Option 1:** Short title and description of Option 1
+* **Option 2:** Short title and description of Option 2
+* **Option 3:** Short title and description of Option 3
+
+## Decision Outcome
+
+**Chosen option:** "Option 1: Short title of Option 1", because detailed justification explaining how it addresses all decision drivers.
+
+### Architectural Rules and Guarantees
+1. Binding architectural rule or invariant 1.
+2. Binding architectural rule or invariant 2.
+3. Boundary rule between layers, services, or storage mechanisms.
+
+## Rejected Alternatives
+
+### 1 · Option 2: Short title of Option 2
+**Why rejected:** Concrete failure mode, operational cost, or runtime violation that disqualified this option. Explain why future engineers or agents must not attempt this path.
+
+### 2 · Option 3: Short title of Option 3
+**Why rejected:** Concrete failure mode, operational cost, or runtime violation that disqualified this option. Explain why future engineers or agents must not attempt this path.
+
+## Consequences and Enforcement
+
+### Positive Consequences
+* Observable architectural or operational benefit 1.
+* Observable architectural or operational benefit 2.
+
+### Negative Consequences and Trade-offs
+* Accepted cost, complexity, or restriction 1.
+* Accepted cost, complexity, or restriction 2.
+
+### Deterministic Enforcement
+
+| Rule | Enforced By | Gate / Mechanism | Governed Symbols |
+| --- | --- | --- | --- |
+| Description of rule 1 | `libs/<scope>/infra/src/file.ts` | `harness gc --strict` | `DomainSymbol.decide` |
+| Description of rule 2 | `tools/oxlint/syntax-bans.js` | AST syntax ban | `SpecificService` |
+```
 
 ---
 
 ## 3. Kontrafaktuálne Pravidlo (Counterfactual Rule)
 
-Inšpirované metodikou `ce-compound` a Nygard ADR štandardom:
+Inšpirované metodikou `ce-compound`, Nygard ADR štandardom a ISO/IEC/IEEE 42010:
 
 > **Zaznamenajte ADR len vtedy, keď rozhodnutie zahŕňa neobvyklé obmedzenia, kompromisy alebo zamietnuté alternatívy, ktoré budúci inžinier alebo agent nemôže odvodiť zo samotného kódu.**
 
@@ -67,12 +148,13 @@ Inšpirované metodikou `ce-compound` a Nygard ADR štandardom:
 Pred zapísaním ADR si položte otázku:
 > *"Zopakoval by budúci inžinier alebo autonómny agent rovnakú chybu, zvrátil by tento kompromis, alebo by znovu otvoril túto diskusiu, keby nemal k dispozícii kontext PREČO sme sa takto rozhodli?"*
 
-- **Ak je odpoveď ÁNO:** Rozhodnutie patrí do `libs/<scope>/docs/adr/` (alebo `docs/adr/` pre globálne pravidlá) so zameraním na **Zamietnuté alternatívy (Rejected Alternatives)** a skryté obmedzenia.
+- **Ak je odpoveď ÁNO (Nové rozhodnutie):** Vytvorte nový záznam v `libs/<scope>/docs/adr/NNNN-<slug>.md` (alebo `docs/adr/` pre celo-workspace rozhodnutia).
+- **Ak je odpoveď ÁNO (Vývoj existujúceho):** Aktualizujte existujúci ADR priamo na mieste, alebo ho označte ako `status: superseded` s odkazom `superseded_by: <scope>:ADR-MMMM`.
 - **Ak je odpoveď NIE:** Bežné implementačné detaily, štandardné Effect vzory a rutinné refaktoringy patria do `agent-patterns/*.md` alebo priamo do testov, nie do ADR.
 
 ---
 
-## 4. Ochrana proti zastarávaniu: `stale-doc-reference` v `harness gc --strict`
+## 4. Ochrana proti zastarávaniu a deterministické kontroly: `AdrDocLint.decide` a `stale-doc-reference` v `harness gc --strict`
 
 Statická dokumentácia je často nebezpečnejšia než žiadna, pretože vytvára falošný pocit istoty. 
 
@@ -80,7 +162,25 @@ V našom harnessi spúšťa príkaz:
 ```bash
 node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts gc --strict
 ```
-čistú rozhodovaciu funkciu **`GraphGc.decide`**, ktorá automaticky vykonáva validáciu **`stale-doc-reference`**:
+čisté rozhodovacie funkcie **`AdrDocLint.decide`** a **`GraphGc.decide`**, ktoré deterministicky garantujú štrukturálnu integritu aj platnosť prepojenia s kódom.
+
+### 4.1 Deterministické Kontroly `AdrDocLint.decide`
+
+Každý ADR dokument je automaticky validovaný čistým deciderom `AdrDocLint.decide` voči 7 kľúčovým invariantom:
+
+| Kontrola lintera | Význam a dôvod zlyhania | Spôsob nápravy |
+| :--- | :--- | :--- |
+| **`adr-frontmatter-invalid`** | Chýbajúci YAML frontmatter, chýbajúce povinné polia (`id`, `title`, `status`, `date`, `enforced_by`), neplatný status, status `superseded` bez `superseded_by`, alebo absencia symbolov (`spans`, `services`, `errors`). | Opravte frontmatter, doplňte povinné polia a aspoň jeden zoznam symbolov (`spans`, `services` alebo `errors`). |
+| **`adr-section-structure`** | Chýbajúca alebo nesprávne zoradená niektorá zo 6 kanonických `##` sekcií (`Context and Problem Statement`, `Decision Drivers`, `Considered Options`, `Decision Outcome`, `Rejected Alternatives`, `Consequences and Enforcement`). | Použite presne 6 kanonických `##` sekcií v predpísanom poradí. |
+| **`adr-missing-drivers-or-options`** | Sekcia `## Decision Drivers` obsahuje menej ako 2 odrážky `* ...`, alebo `## Considered Options` obsahuje menej ako 2 položky `* **Option N:** ...`. | Doplňte aspoň 2 záväzné požiadavky (drivers) a aspoň 2 zvažované možnosti (options). |
+| **`adr-missing-chosen-option`** | Sekcia `## Decision Outcome` nezačína predpísanou frázou `**Chosen option:** "<Option Name>"`. | Otvorte sekciu presnou frázou `**Chosen option:** "<Názov zvolenej možnosti>"`. |
+| **`adr-rejected-alternative-structure`** | Sekcia `## Rejected Alternatives` neobsahuje podsekcie vo formáte `### N · <Option Name>` (so stredovou bodkou `·`), alebo podsekcia nezačína vetou `**Why rejected:** <dôvod>`. | Každú zamietnutú alternatívu naformátujte ako `### N · <Názov>` a otvorte vetou `**Why rejected:** <dôvod zlyhania>`. |
+| **`adr-missing-enforcement-table`** | Sekcia `## Consequences and Enforcement` neobsahuje podsekcie `### Positive Consequences`, `### Negative Consequences and Trade-offs` alebo tabuľku `### Deterministic Enforcement`. | Doplňte obe podsekcie dôsledkov a 4-stĺpcovú tabuľku `\| Rule \| Enforced By \| Gate / Mechanism \| Governed Symbols \|`. |
+| **`adr-unfilled-placeholder`** | Záznam obsahuje nevyplnené šablónové zástupné symboly (`<...>` alebo `TODO`). | Nahraďte všetky placeholdery skutočnými technickými špecifikáciami. |
+
+### 4.2 Validácia Odkazov na Kód: `stale-doc-reference`
+
+Čistá rozhodovacia funkcia `GraphGc.decide` automaticky vykonáva validáciu **`stale-doc-reference`**:
 
 1. Pre každý súbor ADR so statusom `status: accepted` (v `libs/*/docs/adr/*.md`, `apps/*/docs/adr/*.md` aj `docs/adr/*.md`):
    - Overí, že každý súbor deklarovaný v poli **`enforced_by`** fyzicky existuje na disku.

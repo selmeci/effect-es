@@ -800,7 +800,7 @@ Výber šošoviek je riadený signálmi — presným zoznamom balíkov a schopno
 
 Okrem fázy implementácie sa **Adversarial & Feasibility Lens** zapája už v Krok 2/3 (`planning-effect-skeletons`), kde po úspešnom `harness plan-check` audituje graf skeletonu pred pridelením práce implementátorom (idempotency kľúče v kontraktoch, reprezentácia čiastočných zlyhaní v `E` a `R`, čistota deciderov).
 
-### 6.7 Živá Architektonická Dokumentácia (`libs/<scope>/docs/{adr,specs}/` & `docs/{adr,specs}/`) a ochrana proti zastarávaniu (`stale-doc-reference` v `harness gc --strict`)
+### 6.7 Živá Architektonická Dokumentácia (`libs/<scope>/docs/{adr,specs}/` & `docs/{adr,specs}/`) a ochrana proti zastarávaniu (`AdrDocLint.decide`, `EarsSpecLint.decide` a `stale-doc-reference` v `harness gc --strict`)
 
 Architektonická dokumentácia v autonómnych systémoch často zlyháva na dvoch protikladných problémoch: buď chýba kontext za netriviálnymi rozhodnutiami (a agenti opakovane navrhujú zamietnuté vzory), alebo dokumentácia vznikne ako statický text a po dvoch týždňoch refaktorovania driftuje od reality.
 
@@ -814,7 +814,7 @@ Harness MVP v2 zavádza systém **Živej, Strojovo Overiteľnej Architektonickej
   - Každý ADR dokument je extrahovaný ako uzol `AdrDoc` (`_tag: "AdrDoc"`).
   - Z uzla `AdrDoc` smerujú hrany `GovernsSymbol` priamo na dotknuté uzly kódu (`EffectFn`, `ServiceTag`, `TaggedError`).
   - Agenti dopytujú riadiace ADR cez MCP: `harness_callers("<ServiceOrFn>")` vráti hranu `GovernsSymbol` a príslušný uzol `AdrDoc`, zatiaľ čo `harness_callees("<scope>:ADR-NNNN")` zobrazí všetky symboly riadené daným rozhodnutím.
-- **Štruktúra:** MADR štruktúra s povinným zoznamom zamietnutých alternatív a frontmatterom (`id`, `title`, `status`, `date`, `enforced_by`, `spans`, `services`, `errors`).
+- **Štruktúra a deterministické lintovanie (`AdrDocLint.decide` v `harness gc --strict`):** Každé ADR musí dodržiavať kanonickú 6-sekčnú MADR štruktúru (`## Context and Problem Statement`, `## Decision Drivers`, `## Considered Options`, `## Decision Outcome` s povinným `**Chosen option:**`, `## Rejected Alternatives` s číslovanými sekciami `### N · <Option>` a `**Why rejected:**`, `## Consequences and Enforcement` s 4-stĺpcovou tabuľkou `### Deterministic Enforcement`). Čistý decider `AdrDocLint.decide` v `harness gc --strict` deterministicky overuje 7 invariantov (`adr-frontmatter-invalid`, `adr-section-structure`, `adr-missing-drivers-or-options`, `adr-missing-chosen-option`, `adr-rejected-alternative-structure`, `adr-missing-enforcement-table`, `adr-unfilled-placeholder`).
 
 #### 2. EARS Špecifikácie a Grafy Plánov (`libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` & `docs/specs/`)
 - **Účel:** Uchovávajú **Formálne požiadavky EARS + Overený topologický Mermaid graf z `plan-check`**.
@@ -831,8 +831,8 @@ Harness MVP v2 zavádza systém **Živej, Strojovo Overiteľnej Architektonickej
 1. **Spec $\rightarrow$ Plan Brána (`unmapped-spec-symbol` v `harness plan-check`):**
    - Už vo fáze plánovania, keď má špecifikácia stav `status: proposed`, brána `harness plan-check` (`checkEffectGraph`) striktne overuje, že každý `span`, `service` a `error` deklarovaný vo frontmatteri EARS špecifikácie reálne existuje ako uzol v grafe skeletonu (`stub<A, E, R>()`).
    - Ak agent deklaroval span `Sample.deletePhoto`, no v `.ts` skeletone ho zabudol vytvoriť alebo nazval inak, `checkEffectGraph` zlyhá s chybou `unmapped-spec-symbol`.
-2. **Plan $\rightarrow$ Impl Brána (`diffHarnessGraphs` v `harness done` + `stale-doc-reference` a `EarsSpecLint.decide` v `harness gc --strict`):**
-   - Po implementácii a nastavení `status: accepted` príkaz `harness gc --strict` cez pravidlá **`stale-doc-reference`** a **`EarsSpecLint.decide`** overí platnosť odkazov, absenciu zastaraných symbolov a štrukturálnu integritu požiadaviek.
+2. **Plan $\rightarrow$ Impl Brána (`diffHarnessGraphs` v `harness done` + `stale-doc-reference`, `AdrDocLint.decide` a `EarsSpecLint.decide` v `harness gc --strict`):**
+   - Po implementácii a nastavení `status: accepted` príkaz `harness gc --strict` cez pravidlá **`stale-doc-reference`**, **`AdrDocLint.decide`** a **`EarsSpecLint.decide`** overí platnosť odkazov, absenciu zastaraných symbolov a štrukturálnu integritu ADR aj požiadaviek.
    - Následne `harness done` cez **`diffHarnessGraphs`** (porovnanie vetiev `plan/current` a `impl/current`) garantuje, že implementácia nevynechala žiadnu funkciu, službu ani chybový kanál z overeného plánu.
 
 ### 6.8 Property-Based Testing (`it.effect.prop` + `effect/Arbitrary`) a Cielený AST Mutation Testing (`MutationCheck.decide` / `harness mutate`) — Ochrana proti Test Reward Hackingu

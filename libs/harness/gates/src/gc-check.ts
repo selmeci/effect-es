@@ -4,6 +4,7 @@ import { Effect, Option } from "effect"
 import * as Graph from "effect/Graph"
 import type { GovernanceDocStatus, HarnessGraph } from "@harness/graph"
 import { decideEarsSpecQuality } from "./ears-lint.js"
+import { decideAdrDocQuality } from "./adr-lint.js"
 
 export type GcFindingKind =
   | "unused-service"
@@ -15,6 +16,7 @@ export type GcFindingKind =
   | "missing-decider-property-test"
   | "stale-doc-reference"
   | "ears-spec-lint"
+  | "adr-doc-lint"
 
 export interface GcFinding {
   readonly kind: GcFindingKind
@@ -76,7 +78,8 @@ const IGNORED_UNTESTED_FNS = new Set([
   "Harness.proposeLearningAction",
   "Harness.checkPlanStepCoverage",
   "Harness.triageFailure",
-  "EarsSpecLint.decide"
+  "EarsSpecLint.decide",
+  "AdrDocLint.decide"
 ])
 
 export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
@@ -363,6 +366,23 @@ export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
     }
   }
 
+  // 9. adr-doc-lint
+  for (const doc of input.governanceDocs ?? []) {
+    if (
+      doc.markdown !== undefined &&
+      (doc.docPath.includes("/adr/") || doc.id.includes(":ADR-") || doc.id.startsWith("ADR-"))
+    ) {
+      const adrLint = yield* decideAdrDocQuality({ docPath: doc.docPath, markdown: doc.markdown })
+      for (const f of adrLint.findings) {
+        findings.push({
+          kind: "adr-doc-lint",
+          nodeId: doc.id,
+          message: `ADR doc "${doc.id}" (${doc.docPath}:${f.line}) [${f.kind}]: ${f.message}`
+        })
+      }
+    }
+  }
+
   return {
     clean: findings.length === 0,
     findings
@@ -493,13 +513,19 @@ export const parseGovernanceDocFrontmatter = (
   const referencedServices = lists.get("services")
   const referencedErrors = lists.get("errors")
 
-  const isEarsSpec = docPath.includes("/specs/") || id.includes(":SPEC-")
+  const isSpecOrAdr =
+    docPath.includes("/specs/") ||
+    docPath.includes("/adr/") ||
+    id.includes(":SPEC-") ||
+    id.includes(":ADR-") ||
+    id.startsWith("ADR-") ||
+    id.startsWith("SPEC-")
 
   return {
     docPath,
     id,
     status,
-    ...(isEarsSpec ? { markdown } : {}),
+    ...(isSpecOrAdr ? { markdown } : {}),
     ...(enforcedByFiles !== undefined ? { enforcedByFiles, existingFiles } : {}),
     ...(referencedSpans !== undefined ? { referencedSpans } : {}),
     ...(referencedServices !== undefined ? { referencedServices } : {}),
@@ -585,7 +611,14 @@ export const loadGovernanceDocsFromDisk = (
       )
 
       if (parsed !== null) {
-        if (relDir.endsWith("/specs") || parsed.id.includes(":SPEC-")) {
+        if (
+          relDir.endsWith("/specs") ||
+          relDir.endsWith("/adr") ||
+          parsed.id.includes(":SPEC-") ||
+          parsed.id.includes(":ADR-") ||
+          parsed.id.startsWith("ADR-") ||
+          parsed.id.startsWith("SPEC-")
+        ) {
           results.push({
             ...parsed,
             markdown: content
