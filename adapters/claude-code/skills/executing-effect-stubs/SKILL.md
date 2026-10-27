@@ -34,12 +34,17 @@ Implement the production code and tests within each package boundary:
 - Keep `*.decide` deciders strictly pure (`R = never`), confining side effects and cloud bindings to `type:infra`.
 
 ### 3. Final Verification & Closeout (Controller Only)
-1. **Subagent Review (`model: "flash"`):** For non-trivial units, dispatch a read-only reviewer subagent to check spec compliance (all EARS clauses tested, no `syntax-bans` workarounds, no Drizzle types leaking out of `type:infra`).
+1. **Signal-Routed Multi-Lens `flash` Review (Parallel Specialist Subagents):** Before running `harness gc --strict` and `harness verify`, the controller selects and dispatches parallel `flash` review lenses using the [Reviewer Dispatch Guide](references/dispatch-reviewers.md) (read-only reviewer subagents with `model: "flash"` or `model: haiku`) based on the packages and capabilities touched by the task:
+   - **`EARS & Test-Fidelity Lens` ([@effect-ears-test-reviewer](references/personas/ears-test-reviewer.md), Always):** Verifies every EARS clause (`WHEN`, `IF/THEN`, `WHILE`) has a behavior-sensitive `@effect/vitest` assertion (rejecting vacuous/mock-only tests and checking sad-path `TaggedError` coverage).
+   - **`Security & Trust-Boundary Lens` ([@effect-security-reviewer](references/personas/security-reviewer.md), When touching `type:contract`, `HttpApi`, `Rpc`, auth, or `Config`):** Checks actor/tenant authorization (IDOR) in domain use-cases, `Config.redacted` secret handling (`SECRET`, `TOKEN`, `PASSWORD`, `API_KEY`), and boundary `Schema` constraints (bounded strings/arrays/finite numbers).
+   - **`Reliability & Concurrency Lens` ([@effect-reliability-reviewer](references/personas/reliability-reviewer.md), When touching `type:infra`, DO SQLite, D1, Queues, `Schedule`, or `Scope`):** Checks synchronous DO SQLite transaction discipline (zero async I/O inside `runSyncTransaction`), bounded `Schedule` retries with jitter/cap (no unbounded `Schedule.forever`), external `HttpClient` timeouts, and `Scope` resource finalizers.
+   - **`Adversarial Chaos Lens` ([@effect-adversarial-reviewer](references/personas/adversarial-reviewer.md), When touching stateful/multi-step flows, Event Sourcing, Outbox, Projections, or Process Managers):** Acts as a chaos engineer constructing concrete failure sequences (duplicate `commandId` delivery, out-of-order events, crash between SQLite commit and DO alarm/queue dispatch).
+   Reviewers strictly enforce the Quote-the-Line Gate and False-Positive Suppression List described in [references/dispatch-reviewers.md](references/dispatch-reviewers.md).
 2. **Graph Garbage Collection & Entropy Check:** Run the entropy scanner before verification:
    ```bash
-   node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts gc
+   node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts gc --strict
    ```
-   This invokes `GraphGc.decide` to verify zero dead `TaggedError`s (`dead-tagged-error`), unused/unprovided `ServiceTag`s (`unused-service`, `unprovided-service`), orphan `Effect.fn`s (`orphan-effect-fn`), or missing pattern documentation (`missing-pattern-doc`).
+   This invokes `GraphGc.decide` to verify zero dead `TaggedError`s (`dead-tagged-error`), unused/unprovided `ServiceTag`s (`unused-service`, `unprovided-service`), orphan `Effect.fn`s (`orphan-effect-fn`), untested domain functions (`untested-effect-fn`), or missing pattern documentation (`missing-pattern-doc`).
 3. **Whole-Workspace Deterministic Gate:** Run the ONLY sanctioned completion sequence:
    ```bash
    CI=true node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts verify
@@ -53,13 +58,13 @@ Implement the production code and tests within each package boundary:
 | "I'll implement all 4 layers in one giant turn myself" | Monolithic edits across `domain`, `infra`, and `web` pollute context. Locked `stub<A, E, R>()` boundaries let `flash` subagents implement each package cleanly. |
 | "Unit tests passed in `vitest`, so I don't need `harness verify`" | Only `harness verify` checks for leftover `stub()` calls, runs `checkEffectGraph`, and writes `.harness/verify-stamp.json`. Without it, `harness done` (and the `Stop` hook) blocks completion. |
 | "I tweaked a comment/file after `harness verify`, no need to re-run" | `.harness/verify-stamp.json` hashes the entire working tree via SHA-256. Any post-verify file edit invalidates the stamp. |
-| "harness gc isn't necessary if TypeScript builds" | TypeScript does not check for unused `TaggedError`s, unprovided service tags in layers, or missing pattern documentation. `harness gc` stops code entropy before it merges. |
+| "harness gc isn't necessary if TypeScript builds" | TypeScript does not check for unused `TaggedError`s, unprovided service tags in layers, untested domain functions, or missing pattern documentation. `harness gc --strict` stops code entropy before it merges. |
 
 ## Red Flags — STOP
 
 - Leaving any `stub()` call in production code during `verify`
 - Using `async/await`, `try/catch`, `throw`, raw `JSON.parse`, or raw `fetch()` in `scope:web`
-- Dead `TaggedError`s or unprovided `ServiceTag`s detected by `harness gc`
+- Dead `TaggedError`s, unprovided `ServiceTag`s, or untested domain `Effect.fn`s detected by `harness gc`
 - N+1 query/RPC repetitions violating `checkSpanBudgets`
 - Claiming task completion without a fresh `.harness/verify-stamp.json` and a passing `harness done`
 

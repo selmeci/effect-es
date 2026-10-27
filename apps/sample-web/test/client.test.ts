@@ -140,4 +140,58 @@ describe("SampleApiClient and AtomHttpApi", () => {
       }
     }
   })
+
+  it("enforces 5 security and reliability AST bans via oxlint", () => {
+    const testCases = [
+      {
+        file: path.resolve(repoRoot, "apps/sample-web/src/temp-secret-test.ts"),
+        code: 'import { Config } from "effect"\nexport const secret = Config.string("API_SECRET")\n',
+        match: /Sensitive configuration keys/
+      },
+      {
+        file: path.resolve(repoRoot, "apps/sample-web/src/temp-sql-test.ts"),
+        code: "const db: any = {}; const id = 1;\nexport const q = db.prepare(`SELECT * FROM t WHERE id = ${id}`)\n",
+        match: /SQL injection risk/
+      },
+      {
+        file: path.resolve(repoRoot, "libs/sample/domain/src/temp-impure-test.ts"),
+        code: "export const t = Date.now()\n",
+        match: /Impure global/
+      },
+      {
+        file: path.resolve(repoRoot, "apps/sample-web/src/temp-retry-test.ts"),
+        code: 'import { Effect, Schedule } from "effect"\nexport const r = Effect.retry(Effect.void, Schedule.forever)\n',
+        match: /Unbounded Effect\.retry/
+      },
+      {
+        file: path.resolve(repoRoot, "libs/sample/domain/src/temp-ignore-test.ts"),
+        code: 'import { Effect } from "effect"\nexport const ign = Effect.ignore(Effect.void)\n',
+        match: /Swallowing typed errors with Effect\.ignore/
+      }
+    ]
+
+    for (const { file, code, match } of testCases) {
+      try {
+        fs.writeFileSync(file, code)
+        let failed = false
+        let output = ""
+        try {
+          output = execSync(`pnpm exec oxlint ${file}`, {
+            cwd: repoRoot,
+            stdio: "pipe",
+            encoding: "utf-8"
+          })
+        } catch (err: any) {
+          failed = true
+          output = (err.stdout ?? "") + (err.stderr ?? "")
+        }
+        expect(failed).toBe(true)
+        expect(output).toMatch(match)
+      } finally {
+        if (fs.existsSync(file)) {
+          fs.unlinkSync(file)
+        }
+      }
+    }
+  })
 })

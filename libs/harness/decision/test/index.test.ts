@@ -280,4 +280,38 @@ describe("LearnProposalV1 and proposeLearningAction", () => {
       expect(decoderRes.hint).toContain("TS377092")
     })
   )
+
+  it.effect("triageFailure deterministically classifies security & reliability lint messages", () =>
+    Effect.gen(function* () {
+      const configRes = yield* triageFailure(
+        "harness(syntax-bans): Sensitive configuration keys must use Config.redacted(...) instead of Config.string(...)"
+      ).pipe(Effect.provide(makeFailingDecisionModelLayer()))
+      expect(configRes.kind).toBe("mechanical")
+      expect(configRes.hint).toContain("Config.redacted")
+
+      const sqlRes = yield* triageFailure(
+        "harness(syntax-bans): Raw SQL template interpolation in .prepare() is banned (SQL injection risk)"
+      ).pipe(Effect.provide(makeFailingDecisionModelLayer()))
+      expect(sqlRes.kind).toBe("mechanical")
+      expect(sqlRes.hint).toContain("parameterized queries")
+
+      const impureRes = yield* triageFailure(
+        "harness(syntax-bans): Impure global Date.now() / new Date() / Math.random() is banned in type:domain"
+      ).pipe(Effect.provide(makeFailingDecisionModelLayer()))
+      expect(impureRes.kind).toBe("mechanical")
+      expect(impureRes.hint).toContain("Impure global")
+
+      const retryRes = yield* triageFailure(
+        "harness(syntax-bans): Unbounded Effect.retry with Schedule.forever is banned (retry storm risk)"
+      ).pipe(Effect.provide(makeFailingDecisionModelLayer()))
+      expect(retryRes.kind).toBe("mechanical")
+      expect(retryRes.hint).toContain("Schedule.forever")
+
+      const ignoreRes = yield* triageFailure(
+        "harness(syntax-bans): Swallowing typed errors with Effect.ignore is banned in type:domain"
+      ).pipe(Effect.provide(makeFailingDecisionModelLayer()))
+      expect(ignoreRes.kind).toBe("mechanical")
+      expect(ignoreRes.hint).toContain("Effect.ignore")
+    })
+  )
 })

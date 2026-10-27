@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { Effect, Option, Schema } from "effect"
+import * as Graph from "effect/Graph"
 import {
   type CallExpression,
   type NewExpression,
@@ -17,13 +18,17 @@ import {
 import { buildHarnessGraph } from "./graph-engine.js"
 import type {
   EffectFnNode,
+  ExercisesSpanEdge,
+  HarnessEdge,
   HarnessGraph,
+  HarnessNode,
   LayerKind,
   PackageTag,
   PatternDocNode,
   ServiceLayerNode,
   ServiceTagNode,
-  TaggedErrorNode
+  TaggedErrorNode,
+  VitestCaseNode
 } from "./model.js"
 import { loadPatternDocs } from "./pattern-index.js"
 
@@ -685,6 +690,46 @@ const findWorkspaceSrcFiles = (repoRoot: string): ReadonlyArray<string> => {
   return results
 }
 
+const findWorkspaceTestFiles = (repoRoot: string): ReadonlyArray<string> => {
+  const results: Array<string> = []
+  const subDirs = ["libs", "apps"]
+
+  const walk = (current: string): void => {
+    if (!fs.existsSync(current)) return
+    const entries = fs.readdirSync(current, { withFileTypes: true })
+    for (const e of entries) {
+      if (
+        e.name === "node_modules" ||
+        e.name === "dist" ||
+        e.name === ".nx" ||
+        e.name === "repos" ||
+        e.name === ".git" ||
+        e.name === ".harness"
+      ) {
+        continue
+      }
+      const full = path.join(current, e.name)
+      if (e.isDirectory()) {
+        walk(full)
+      } else if (
+        e.isFile() &&
+        e.name.endsWith(".test.ts")
+      ) {
+        const rel = path.relative(repoRoot, full).replace(/\\/g, "/")
+        if (rel.includes("/test/")) {
+          results.push(rel)
+        }
+      }
+    }
+  }
+
+  for (const sub of subDirs) {
+    walk(path.join(repoRoot, sub))
+  }
+
+  return results
+}
+
 export const extractWorkspaceTypeAwareGraph = (
   repoRoot: string
 ): Effect.Effect<HarnessGraph> =>
@@ -705,8 +750,76 @@ export const extractWorkspaceTypeAwareGraph = (
     }
 
     const patternDocs = loadPatternDocs(repoRoot)
-    return extractTypeAwareGraphFromSource(inputs, {
+    const baseGraph = extractTypeAwareGraphFromSource(inputs, {
       repoRoot,
       patternDocs
     })
+
+    const effectFns: Array<EffectFnNode> = []
+    for (const [, node] of Graph.nodes(baseGraph.graph)) {
+      if (node._tag === "EffectFn") {
+        effectFns.push(node)
+      }
+    }
+
+    const testFiles = findWorkspaceTestFiles(repoRoot)
+    const updatedNodeIndexByKey = new Map<string, Graph.NodeIndex>(baseGraph.nodeIndexByKey)
+
+    const augmentedGraph = Graph.mutate<HarnessNode, HarnessEdge>(
+      baseGraph.graph,
+      (mutable) => {
+        for (const relTestFile of testFiles) {
+          const fullPath = path.join(repoRoot, relTestFile)
+          if (!fs.existsSync(fullPath)) continue
+          const content = fs.readFileSync(fullPath, "utf-8")
+          if (
+            !content.includes("describe(") &&
+            !content.includes("it(") &&
+            !content.includes("it.effect(")
+          ) {
+            continue
+          }
+
+          const testNode: VitestCaseNode = {
+            _tag: "VitestCase",
+            testId: `${relTestFile}::suite`,
+            testFile: relTestFile,
+            testName: relTestFile,
+            lastTreeHash: "workspace"
+          }
+          const testIdx = Graph.addNode(mutable, testNode)
+          updatedNodeIndexByKey.set(testNode.testId, testIdx)
+
+          for (const fnNode of effectFns) {
+            const fnName = fnNode.qualname.split("#")[1] ?? ""
+            const escapedFnName = fnName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+            const fnRegex = escapedFnName
+              ? new RegExp(`(?:\\b|\\$)${escapedFnName}\\s*\\(`)
+              : null
+            const matches =
+              (fnRegex !== null && fnRegex.test(content)) ||
+              (fnNode.spanName.length > 0 && content.includes(fnNode.spanName))
+
+            if (matches) {
+              const calleeIdx = updatedNodeIndexByKey.get(fnNode.qualname)
+              if (calleeIdx !== undefined) {
+                const edge: ExercisesSpanEdge = {
+                  _tag: "ExercisesSpan",
+                  testId: testNode.testId,
+                  calleeQualname: fnNode.qualname,
+                  callCount: 1,
+                  receiverLayer: null
+                }
+                Graph.addEdge(mutable, testIdx, calleeIdx, edge)
+              }
+            }
+          }
+        }
+      }
+    )
+
+    return {
+      graph: augmentedGraph,
+      nodeIndexByKey: updatedNodeIndexByKey
+    } satisfies HarnessGraph
   })

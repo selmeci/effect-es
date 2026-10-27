@@ -16,6 +16,16 @@ const domainExportMessage =
   "Exported domain functions must use Effect.fn('LiteralName') for runtime trace correlation."
 const fetchBanMessage =
   "Direct `fetch(...)` is banned in web app code — consume endpoints through typed AtomHttpApi queries and mutations (SampleApiClient)."
+const secretConfigMessage =
+  "Sensitive configuration keys (SECRET, TOKEN, PASSWORD, API_KEY, PRIVATE_KEY, CREDENTIAL) must use Config.redacted(...) instead of Config.string(...) to prevent leaking secrets in logs and spans."
+const sqlInterpolationMessage =
+  "Raw SQL template interpolation in .exec(`...${...}`) or .prepare(`...${...}`) is banned (SQL injection risk) — use parameterized queries or Drizzle ORM."
+const impureDomainGlobalMessage =
+  "Impure global Date.now() / new Date() / Math.random() is banned in type:domain — pass timestamps/randomness via input or use Effect Clock / Random services so domain deciders remain deterministic."
+const foreverRetryMessage =
+  "Unbounded Effect.retry with Schedule.forever is banned (retry storm risk) — bound retries with Schedule.recurs(n) or Schedule.upTo(duration)."
+const domainEffectIgnoreMessage =
+  "Swallowing typed errors with Effect.ignore is banned in type:domain — surface failures in the E channel or handle them explicitly."
 
 function isIdentifier(node, name) {
   return node != null && node.type === "Identifier" && node.name === name
@@ -105,6 +115,92 @@ function isUntracedEffectCall(node) {
   return false
 }
 
+function isSecretConfigCall(node) {
+  if (node == null || node.type !== "CallExpression") return false
+  const callee = node.callee
+  if (
+    callee != null &&
+    callee.type === "MemberExpression" &&
+    callee.computed !== true &&
+    isIdentifier(callee.object, "Config") &&
+    (isIdentifier(callee.property, "string") || isIdentifier(callee.property, "nonEmptyString"))
+  ) {
+    const arg0 = node.arguments[0]
+    if (
+      arg0 != null &&
+      arg0.type === "Literal" &&
+      typeof arg0.value === "string" &&
+      /(SECRET|TOKEN|PASSWORD|API_KEY|PRIVATE_KEY|CREDENTIAL)/i.test(arg0.value)
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function isSqlInterpolationCall(node) {
+  if (node == null || node.type !== "CallExpression") return false
+  const callee = node.callee
+  if (
+    callee != null &&
+    callee.type === "MemberExpression" &&
+    callee.computed !== true &&
+    (isIdentifier(callee.property, "exec") || isIdentifier(callee.property, "prepare"))
+  ) {
+    const arg0 = node.arguments[0]
+    if (
+      arg0 != null &&
+      arg0.type === "TemplateLiteral" &&
+      Array.isArray(arg0.expressions) &&
+      arg0.expressions.length > 0
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasScheduleForever(node) {
+  if (node == null || typeof node !== "object") return false
+  if (
+    node.type === "MemberExpression" &&
+    node.computed !== true &&
+    isIdentifier(node.object, "Schedule") &&
+    isIdentifier(node.property, "forever")
+  ) {
+    return true
+  }
+  for (const key of Object.keys(node)) {
+    if (key === "parent") continue
+    const val = node[key]
+    if (Array.isArray(val)) {
+      for (const item of val) {
+        if (item != null && typeof item === "object" && item.type) {
+          if (hasScheduleForever(item)) return true
+        }
+      }
+    } else if (val != null && typeof val === "object" && val.type) {
+      if (hasScheduleForever(val)) return true
+    }
+  }
+  return false
+}
+
+function isEffectRetryCall(node) {
+  if (node == null || node.type !== "CallExpression") return false
+  const callee = node.callee
+  if (
+    callee != null &&
+    callee.type === "MemberExpression" &&
+    callee.computed !== true &&
+    isIdentifier(callee.object, "Effect") &&
+    isIdentifier(callee.property, "retry")
+  ) {
+    return true
+  }
+  return false
+}
+
 const effectTsgoDisableMessage =
   "Suppressing `effecttsgo/*` (@effect/language-service) diagnostics with oxlint-disable is banned — fix the underlying Effect idiom violation instead."
 
@@ -136,6 +232,21 @@ const syntaxBans = {
         if (isNewPromise(node)) {
           context.report({ node, message: newPromiseMessage })
         }
+        const filename = (context.filename ?? (typeof context.getFilename === "function" ? context.getFilename() : "")).replace(/\\/g, "/")
+        if (/libs\/[^/]+\/domain\/src\//.test(filename) && isIdentifier(node.callee, "Date")) {
+          context.report({ node, message: impureDomainGlobalMessage })
+        }
+      },
+      MemberExpression(node) {
+        const filename = (context.filename ?? (typeof context.getFilename === "function" ? context.getFilename() : "")).replace(/\\/g, "/")
+        if (
+          /libs\/[^/]+\/domain\/src\//.test(filename) &&
+          node.computed !== true &&
+          isIdentifier(node.object, "Effect") &&
+          isIdentifier(node.property, "ignore")
+        ) {
+          context.report({ node, message: domainEffectIgnoreMessage })
+        }
       },
       TryStatement(node) {
         context.report({ node, message: tryMessage })
@@ -162,9 +273,30 @@ const syntaxBans = {
             context.report({ node, message: effectFnMessage })
           }
         }
+        if (isSecretConfigCall(node)) {
+          context.report({ node, message: secretConfigMessage })
+        }
+        if (isSqlInterpolationCall(node)) {
+          context.report({ node, message: sqlInterpolationMessage })
+        }
+        if (isEffectRetryCall(node) && node.arguments.some(hasScheduleForever)) {
+          context.report({ node, message: foreverRetryMessage })
+        }
         const filename = (context.filename ?? (typeof context.getFilename === "function" ? context.getFilename() : "")).replace(/\\/g, "/")
         if (filename.includes("sample-web/src/") && isFetchCall(node)) {
           context.report({ node, message: fetchBanMessage })
+        }
+        if (/libs\/[^/]+\/domain\/src\//.test(filename)) {
+          const callee = node.callee
+          if (
+            callee != null &&
+            callee.type === "MemberExpression" &&
+            callee.computed !== true &&
+            ((isIdentifier(callee.object, "Date") && isIdentifier(callee.property, "now")) ||
+             (isIdentifier(callee.object, "Math") && isIdentifier(callee.property, "random")))
+          ) {
+            context.report({ node, message: impureDomainGlobalMessage })
+          }
         }
       },
       ExportNamedDeclaration(node) {

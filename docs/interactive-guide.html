@@ -1448,7 +1448,7 @@
 
         <div class="subtabs" id="qualitySubtabs">
           <button class="subtab-btn quality-subtab-btn active" data-quality-subtab="view-gc">
-            <span>🧹</span> harness gc (GraphGc.decide — Entropy &amp; Dead-Node Scanner)
+            <span>🧹</span> harness gc --strict (GraphGc.decide — Entropy &amp; Dead-Node Scanner)
           </button>
           <button class="subtab-btn quality-subtab-btn" data-quality-subtab="view-span-budget">
             <span>⏱️</span> SpanBudget.decide (N+1 &amp; Latency Sensor)
@@ -1458,7 +1458,7 @@
         <!-- Panel 1: harness gc -->
         <div id="quality-view-gc" class="quality-subtab-content">
           <div style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
-            Príkaz <code>harness gc</code> spúšťa čistú rozhodovaciu funkciu <code>GraphGc.decide</code> nad celým <code>HarnessGraph</code>. Odhaľuje mŕtvy kód a nepoužité či neposkytnuté služby pred <code>verify</code> a <code>done</code>.
+            Príkaz <code>harness gc --strict</code> spúšťa čistú rozhodovaciu funkciu <code>GraphGc.decide</code> nad celým <code>HarnessGraph</code>. Odhaľuje mŕtvy kód, neotestované funkcie (<code>untested-effect-fn</code>) a nepoužité či neposkytnuté služby pred <code>verify</code> a <code>done</code>.
           </div>
 
           <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
@@ -1473,6 +1473,9 @@
             </button>
             <button class="gc-pill scenario-pill" data-gc-scenario="unprovided-service">
               <span>⚠️</span> unprovided-service
+            </button>
+            <button class="gc-pill scenario-pill" data-gc-scenario="untested-effect-fn">
+              <span>⚠️</span> untested-effect-fn
             </button>
             <button class="gc-pill scenario-pill" data-gc-scenario="missing-pattern-doc">
               <span>⚠️</span> missing-pattern-doc
@@ -1489,7 +1492,7 @@
             </p>
             <div class="code-box">
               <div class="code-box-header">
-                <span>Výstup príkazu: node apps/harness-cli/src/index.ts gc</span>
+                <span>Výstup príkazu: node apps/harness-cli/src/index.ts gc --strict</span>
                 <span id="gcScenarioExit">exitCode: 0</span>
               </div>
               <pre><code id="gcScenarioOutput">{
@@ -1549,6 +1552,63 @@
 });
 expect(violations).toHaveLength(0);</code></pre>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2026 Security, Reliability & Migration Gates Card -->
+      <div class="card" style="margin-top: 1.5rem;">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">🔒 Security, Reliability &amp; MigrationSafety.decide Gates</h2>
+            <p class="card-subtitle">
+              Deterministické statické zákazy a bezpečnostné brány zabraňujúce úniku tajomstiev, SQL injection, zacykleniu Workerov a deštruktívnym zmenám v databáze.
+            </p>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
+          <button class="gate-pill scenario-pill active" data-gate-scenario="valid-safe">
+            <span>✅</span> Bezpečný kód (0 porušení)
+          </button>
+          <button class="gate-pill scenario-pill" data-gate-scenario="config-redacted">
+            <span>🚨</span> Config.redacted (Únik tajomstiev)
+          </button>
+          <button class="gate-pill scenario-pill" data-gate-scenario="sql-injection">
+            <span>🚨</span> SQL Injection (Raw template string)
+          </button>
+          <button class="gate-pill scenario-pill" data-gate-scenario="schedule-forever">
+            <span>⏱️</span> Schedule.forever v Effect.retry
+          </button>
+          <button class="gate-pill scenario-pill" data-gate-scenario="migration-unsafe">
+            <span>🛑</span> MigrationSafety: ADD COLUMN NOT NULL
+          </button>
+        </div>
+
+        <div class="card" style="background: var(--bg-surface); border: 1px solid var(--border-strong); margin-bottom: 0;">
+          <div class="card-header">
+            <h3 id="gateScenarioTitle" style="font-size: 1rem; font-weight: 700;">Bezpečnostné brány: Všetky invarianty splnené</h3>
+            <span id="gateScenarioBadge" class="badge badge-pass">GATES: PASS</span>
+          </div>
+          <p id="gateScenarioDesc" style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 0.75rem;">
+            Kód dodržiava striktné zapuzdrenie tajomstiev, parametrizované SQL dotazy, ohraničené Schedule politiky a bezpečné databázové migrácie.
+          </p>
+          <div class="code-box">
+            <div class="code-box-header">
+              <span id="gateScenarioTool">oxlint syntax-bans.js &amp; MigrationSafety.decide</span>
+              <span id="gateScenarioExit">exitCode: 0</span>
+            </div>
+            <pre><code id="gateScenarioOutput">✔ All security, reliability, and migration gates passed.
+✔ Config.redacted used for all secrets.
+✔ No raw SQL interpolation in .exec() or .prepare().
+✔ Bounded retry schedules with jitter.
+✔ Migration safety check: 0 destructive operations.</code></pre>
+          </div>
+          <div class="detail-section" style="margin-top: 0.75rem; background: var(--bg-elevated);">
+            <div class="detail-section-title">💡 Diagnostika a architektonické pravidlo:</div>
+            <div id="gateScenarioFix" style="font-size: 0.88rem; color: var(--text-primary); line-height: 1.6;">
+              Kód je pripravený na nasadenie. Žiadne bezpečnostné riziko ani riziko straty produkčných dát.
             </div>
           </div>
         </div>
@@ -1983,22 +2043,22 @@ expect(violations).toHaveLength(0);</code></pre>
         happy: {
           status: "PASS",
           badgeClass: "badge-pass",
-          scenarioTitle: "Happy Path: Nahradenie stub() reálnou logikou a testami",
+          scenarioTitle: "Happy Path: Nahradenie stub() reálnou logikou, Multi-Lens Review a harness gc --strict",
           who: "Izolovaný implementačný subagent spustený cez skill `executing-effect-stubs`.",
-          input: 'Vstupný súbor so stub() + nová implementácia s `Effect.gen`, `Schema.decode`, `Effect.catchTag` a `@effect/vitest` testami.',
-          underTheHood: 'Subagent prepisuje telo funkcie na čistý Effect kód bez zakázanej syntaxe. Spúšťa inkrementálny lint a testy. Po každej zmene súboru `PostToolUse` hook spúšťa `harness ingest` na re-indexáciu spanov.',
-          output: 'Implementovaný modul bez stub(), jednotkové testy `it.effect` prechádzajú na 100%.\nExit kód: 0 (PASS)',
-          next: 'Prechod do fázy 5: Spustenie finálnej verifikácie cez `harness verify`.'
+          input: 'Vstupný súbor so stub() + nová produkčná implementácia s `Effect.gen`, `Schema.decode`, `Effect.catchTag` a `@effect/vitest` testami.',
+          underTheHood: '1. Subagent prepisuje telá funkcií bez zakázanej syntaxe, inkrementálne overuje lint a testy; `harness ingest` reindexuje spany.\n2. Pred verifikáciou koordinátor spustí Signal-Routed Multi-Lens `flash` Review (paralelné špecializované subagenty: `EARS & Test-Fidelity`, `Security & Trust-Boundary`, `Reliability & Concurrency`, `Adversarial Chaos`).\n3. Prebehne kontrola nulovej entropie a dosiahnuteľnosti testov cez `harness gc --strict` (overenie 0 chýb a nulového počtu `untested-effect-fn`).',
+          output: 'Implementovaný modul bez stub(), multi-lens review schválené, `harness gc --strict` čisté (0 chýb, 0 untested-effect-fn), jednotkové testy `it.effect` prechádzajú na 100%.\nExit kód: 0 (PASS)',
+          next: 'Prechod do fázy 5: Spustenie finálnej verifikácie cez `harness verify` a zápis kryptografickej pečiatky.'
         },
         failure: {
           status: "BLOCK",
           badgeClass: "badge-block",
-          scenarioTitle: "Chyba / Porušenie: Výskyt zakázanej syntaxe (throw / async / JSON.parse)",
-          who: "Subagent použije bežné JavaScriptové konštrukcie namiesto idiomatického Effectu.",
-          input: 'Kód obsahuje: `throw new Error("Invalid")` alebo `const data = JSON.parse(str)`.',
-          underTheHood: 'Linter `oxlint` so špecifickými pravidlami `@harness/syntax-bans` okamžite zachytí zakázanú syntax: zákaz `throw`, `try/catch`, `async/await` a raw `JSON.parse`.',
-          output: 'Stderr: `oxlint: banned throw statement found in libs/sample/domain/src/cart.ts:42. Use Effect.fail or yield* new TaggedError().`\nExit kód: 1 (BLOCK)',
-          next: 'Subagent dostane spätnú väzbu z lintera a musí refaktorovať kód na `Schema.decodeUnknown` a `Effect.fail`.'
+          scenarioTitle: "Chyba / Porušenie: Výskyt zakázanej syntaxe, raw SQL alebo untested-effect-fn v gc --strict",
+          who: "Subagent použije nebezpečnú konštrukciu alebo vynechá testovanie doménovej funkcie.",
+          input: 'Kód obsahuje: `throw new Error()`, raw SQL template string, alebo funkcia Cart.checkout nemá test.',
+          underTheHood: 'Statické pravidlá `oxlint` (`syntax-bans.js`) alebo `harness gc --strict` okamžite zachytia porušenie: zákaz `throw`/`async`/raw SQL interpolácie, chýbajúce `Config.redacted` pre tajomstvá, alebo netestovaný use-case (`untested-effect-fn`).',
+          output: 'Stderr: `harness gc --strict: untested-effect-fn found in libs/sample/domain/src/cart.ts (0 ExercisesSpan edges from vitest)`\nExit kód: 1 (BLOCK)',
+          next: 'Subagent dostane presné hlásenie chyby a musí doplniť @effect/vitest test alebo refaktorovať kód podľa pravidiel.'
         },
         escalate: {
           status: "ASK",
@@ -2585,6 +2645,22 @@ expect(violations).toHaveLength(0);</code></pre>
         }, null, 2),
         fix: "Implementujte chýbajúci Layer (napr. AlbumCounterClientLive) v type:infra a zložte ho do hlavného aplikačného Layeru cez Layer.provide."
       },
+      "untested-effect-fn": {
+        title: "Netestovaná doménová funkcia: Cart.checkout",
+        badgeClass: "badge badge-block",
+        badgeText: "CLEAN: FALSE",
+        desc: "Funkcia deklarovaná cez Effect.fn v type:domain nemá v grafe prichádzajúcu hranu ExercisesSpan z testov (@effect/vitest).",
+        exit: "exitCode: 1",
+        output: JSON.stringify({
+          clean: false,
+          findings: [{
+            kind: "untested-effect-fn",
+            nodeId: "Cart.checkout",
+            message: "Domain Effect.fn 'Cart.checkout' has 0 incoming ExercisesSpan edges in HarnessGraph. Untested domain functions are banned in strict mode."
+          }]
+        }, null, 2),
+        fix: "Napíšte test v @effect/vitest (it.effect) spustený cez runWithTestTracer, ktorý pokrýva doménový use-case Cart.checkout."
+      },
       "missing-pattern-doc": {
         title: "Chýbajúca dokumentácia vzoru: durable-object-state",
         badgeClass: "badge badge-block",
@@ -2688,6 +2764,88 @@ expect(violations).toHaveLength(0);</code></pre>
           spanScenarioStatus.textContent = item.status;
           spanScenarioOutput.textContent = item.output;
           spanScenarioFix.textContent = item.fix;
+        }
+      });
+    });
+
+    // --- SECTION 3: SECURITY, RELIABILITY & MIGRATION GATES ---
+    const gatePills = document.querySelectorAll(".gate-pill");
+    const gateScenarioTitle = document.getElementById("gateScenarioTitle");
+    const gateScenarioBadge = document.getElementById("gateScenarioBadge");
+    const gateScenarioDesc = document.getElementById("gateScenarioDesc");
+    const gateScenarioTool = document.getElementById("gateScenarioTool");
+    const gateScenarioExit = document.getElementById("gateScenarioExit");
+    const gateScenarioOutput = document.getElementById("gateScenarioOutput");
+    const gateScenarioFix = document.getElementById("gateScenarioFix");
+
+    const gateData = {
+      "valid-safe": {
+        title: "Bezpečnostné brány: Všetky invarianty splnené",
+        badgeClass: "badge badge-pass",
+        badgeText: "GATES: PASS",
+        desc: "Kód dodržiava striktné zapuzdrenie tajomstiev, parametrizované SQL dotazy, ohraničené Schedule politiky a bezpečné databázové migrácie.",
+        tool: "oxlint syntax-bans.js & MigrationSafety.decide",
+        exit: "exitCode: 0",
+        output: "✔ All security, reliability, and migration gates passed.\n✔ Config.redacted used for all secrets.\n✔ No raw SQL interpolation in .exec() or .prepare().\n✔ Bounded retry schedules with jitter.\n✔ Migration safety check: 0 destructive operations.",
+        fix: "Kód je pripravený na nasadenie. Žiadne bezpečnostné riziko ani riziko straty produkčných dát."
+      },
+      "config-redacted": {
+        title: "Zraniteľnosť: Nechránený kľúč alebo heslo bez Config.redacted",
+        badgeClass: "badge badge-block",
+        badgeText: "BANNED SYNTAX",
+        desc: "Konfigurácia obsahujúca API kľúč alebo heslo používa obyčajný Config.string namiesto Config.redacted.",
+        tool: "oxlint syntax-bans.js (rule: banned-unredacted-secret)",
+        exit: "exitCode: 1",
+        output: "Error: Plain Config.string used for sensitive key 'STRIPE_API_KEY' in libs/sample/infra/src/config.ts:18.\nUse Config.redacted(\"STRIPE_API_KEY\") to prevent leaking credentials in telemetry traces and error logs.",
+        fix: "Nahraďte Config.string(\"STRIPE_API_KEY\") za Config.redacted(\"STRIPE_API_KEY\"). Citlivé reťazce budú v pamäti chránené ako Redacted<string> a v logoch zobrazené ako <redacted>."
+      },
+      "sql-injection": {
+        title: "Zraniteľnosť: Raw SQL interpolácia v SQLite / D1",
+        badgeClass: "badge badge-block",
+        badgeText: "SQL INJECTION",
+        desc: "Template literal interpolácia reťazcov v SQL metódach .exec() alebo .prepare() otvára priestor pre SQL injection.",
+        tool: "oxlint syntax-bans.js (rule: banned-raw-sql-interpolation)",
+        exit: "exitCode: 1",
+        output: "Error: Raw template literal interpolation detected in db.prepare(`SELECT * FROM users WHERE id = '${userId}'`) at libs/sample/infra/src/user-repo.ts:34.\nUse parameterized query .prepare(\"SELECT * FROM users WHERE id = ?\").bind(userId) or Drizzle sql tag.",
+        fix: "Zákaz reťazcovej interpolácie v SQL volaniach. Použite výhradne parametrizované dotazy s .bind(...) alebo Drizzle sql template tag."
+      },
+      "schedule-forever": {
+        title: "Riziko zacyklenia: Neohraničený Schedule.forever v Effect.retry",
+        badgeClass: "badge badge-block",
+        badgeText: "UNBOUNDED RETRY",
+        desc: "Neohraničené opakovanie úloh v serverless Worker prostredí vedie k vyčerpaniu CPU času, pamäte a zablokovaniu behu.",
+        tool: "oxlint syntax-bans.js (rule: banned-schedule-forever-retry)",
+        exit: "exitCode: 1",
+        output: "Error: Effect.retry(effect, Schedule.forever) detected at libs/sample/domain/src/sync.ts:52.\nUnbounded retries in serverless cloud workers risk memory exhaustion and thread lock.",
+        fix: "Kombinujte Schedule.exponential(...) so Schedule.intersect(Schedule.recurs(5)) a Schedule.jittered pre ohraničený počet opakovaní s exponenciálnym odstupom."
+      },
+      "migration-unsafe": {
+        title: "Deštruktívna migrácia: ALTER TABLE ADD COLUMN NOT NULL bez DEFAULT",
+        badgeClass: "badge badge-escalate",
+        badgeText: "ESCALATE (EXIT 2)",
+        desc: "SQL migrácia pridáva stĺpec NOT NULL do existujúcej tabuľky bez predvolenej hodnoty DEFAULT, čo v SQLite spôsobí fatálne zlyhanie.",
+        tool: "MigrationSafety.decide (migration:check)",
+        exit: "exitCode: 2 (ESCALATE)",
+        output: "ESCALATE: Migration contains 'ALTER TABLE photos ADD COLUMN author_id text NOT NULL;' without DEFAULT clause.\nSQLite will fail to apply this on tables with existing rows.",
+        fix: "Pridajte explicitnú klauzulu DEFAULT (napr. DEFAULT '') alebo vytvorte stĺpec ako nullable a naplňte ho backfillom, inak migrácia v produkcii zhavaruje."
+      }
+    };
+
+    gatePills.forEach(pill => {
+      pill.addEventListener("click", () => {
+        gatePills.forEach(p => p.classList.remove("active"));
+        pill.classList.add("active");
+        const key = pill.getAttribute("data-gate-scenario");
+        const item = gateData[key];
+        if (item) {
+          gateScenarioTitle.textContent = item.title;
+          gateScenarioBadge.className = item.badgeClass;
+          gateScenarioBadge.textContent = item.badgeText;
+          gateScenarioDesc.textContent = item.desc;
+          if (gateScenarioTool) gateScenarioTool.textContent = item.tool;
+          gateScenarioExit.textContent = item.exit;
+          gateScenarioOutput.textContent = item.output;
+          gateScenarioFix.textContent = item.fix;
         }
       });
     });

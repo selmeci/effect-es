@@ -738,7 +738,8 @@ const handleGc = (
     const graph = yield* extractWorkspaceTypeAwareGraph(repoRoot)
     const hasPatternsDir = existsSync(join(repoRoot, "agent-patterns"))
     const report = scanGraphEntropy(graph, {
-      expectedPatterns: hasPatternsDir ? IDIOM_BLOCKS : undefined
+      expectedPatterns: hasPatternsDir ? IDIOM_BLOCKS : undefined,
+      checkUntestedDomainFns: true
     })
     return {
       exitCode: strict && !report.clean ? 1 : 0,

@@ -87,6 +87,41 @@ const DETERMINISTIC_TRIAGE_RULES: ReadonlyArray<{
       kind: "mechanical",
       hint: "Input is already assignable to Schema Encoded type (TS377092) — use `Schema.decodeSync` / `Schema.decodeEffect` instead of `decodeUnknown*`."
     }
+  },
+  {
+    pattern: "Config.redacted",
+    result: {
+      kind: "mechanical",
+      hint: "Sensitive configuration keys (SECRET, TOKEN, PASSWORD, API_KEY, PRIVATE_KEY, CREDENTIAL) must use Config.redacted(...) instead of Config.string(...) to prevent leaking secrets in logs and spans."
+    }
+  },
+  {
+    pattern: "SQL injection risk",
+    result: {
+      kind: "mechanical",
+      hint: "Raw SQL template interpolation in .exec() or .prepare() is banned (SQL injection risk) — use parameterized queries or Drizzle ORM."
+    }
+  },
+  {
+    pattern: "Impure global",
+    result: {
+      kind: "mechanical",
+      hint: "Impure global Date.now() / new Date() / Math.random() is banned in type:domain — pass timestamps/randomness via input or use Effect Clock / Random services so domain deciders remain deterministic."
+    }
+  },
+  {
+    pattern: "Schedule.forever",
+    result: {
+      kind: "mechanical",
+      hint: "Unbounded Effect.retry with Schedule.forever is banned (retry storm risk) — bound retries with Schedule.recurs(n) or Schedule.upTo(duration)."
+    }
+  },
+  {
+    pattern: "Effect.ignore",
+    result: {
+      kind: "mechanical",
+      hint: "Swallowing typed errors with Effect.ignore is banned in type:domain — surface failures in the E channel or handle them explicitly."
+    }
   }
 ]
 

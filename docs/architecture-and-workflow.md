@@ -261,12 +261,17 @@ Keď je plán uzamknutý v grafe, nastáva implementácia:
      - Zákaz priameho `JSON.parse` $\rightarrow$ dekódujte cez `Schema.decodeUnknown*`.
      - Zákaz `stub()` v produkčnom overení.
      - Zákaz volania `fetch(...)` vo webovej aplikácii $\rightarrow$ použite `SampleApiClient`.
+     - Povinné `Config.redacted` pre tajomstvá a kľúče (`SECRET`, `TOKEN`, `PASSWORD`, `API_KEY`).
+     - Zákaz raw SQL template literal interpolácie v `.exec(...)` / `.prepare(...)` $\rightarrow$ použite parametrizované dotazy (`.bind(...)` alebo Drizzle `sql`).
+     - Zákaz nečistých globálnych volaní (`Date.now()`, `new Date()`, `Math.random()`) a `Effect.ignore` v `type:domain`.
+     - Zákaz neohraničeného `Schedule.forever` v `Effect.retry` $\rightarrow$ vyžadujú sa ohraničené Schedule s jitterom a stropom.
    - **`openapi:check` (`libs/sample/contract`):**
      - Deteguje breaking changes voči referenčnej schéme.
      - Ak dôjde k breaking zmene (napr. zmazanie poľa bez spätnej kompatibility), skript skončí s **`exit 2` a výstupom `ESCALATE`**, čo vyžaduje zásah používateľa.
-   - **`migration:check` (`libs/sample/infra`):**
-     - Simuluje `drizzle-kit generate` voči dočasnej zložke.
-     - Ak nová migrácia obsahuje deštruktívne SQL (`DROP TABLE`, `DROP COLUMN`, `DROP INDEX`), skript skončí s **`exit 2` a výstupom `ESCALATE`**.
+   - **`migration:check` (`libs/sample/infra` & `MigrationSafety.decide`):**
+     - Simuluje `drizzle-kit generate` voči dočasnej zložke a overuje SQL cez `MigrationSafety.decide`.
+     - Deteguje deštruktívne SQL (`DROP TABLE`, `DROP COLUMN`, `DROP INDEX`), SQLite table rebuildy (`__new_<table_name>`) a `ALTER TABLE ... ADD COLUMN ... NOT NULL` bez `DEFAULT`.
+     - Ak nová migrácia obsahuje takéto zmeny, skript skončí s **`exit 2` a výstupom `ESCALATE`**.
 
 ---
 
@@ -645,37 +650,42 @@ Agenti v adaptéroch Antigravity a Claude Code používajú skill `compounding-e
 
 ## 6. Pokročilé 2026 Harness Engineering Mechanizmy
 
-V modernom vývojovom procese s paralelnými autonómnymi subagentmi vznikajú špecifické riziká: akumulácia mŕtveho kódu a nezapojených služieb, strata kontextu pri reštarte konverzácie alebo compactingu, skryté výkonnostné degradácie (N+1 databázové a RPC dotazy) a kolízie stavových súborov medzi súbežnými pracovníkmi.
+V modernom vývojovom procese s paralelnými autonómnymi subagentmi vznikajú špecifické riziká: akumulácia mŕtveho kódu a nezapojených služieb, strata kontextu pri reštarte konverzácie alebo compactingu, skryté výkonnostné degradácie (N+1 databázové a RPC dotazy), kolízie stavových súborov medzi súbežnými pracovníkmi, bezpečnostné zraniteľnosti a deštruktívne databázové migrácie.
 
-Effect-TS Engineering Harness rieši tieto výzvy prostredníctvom štyroch pokročilých deterministických mechanizmov:
+Effect-TS Engineering Harness rieši tieto výzvy prostredníctvom šiestich pokročilých deterministických mechanizmov:
 
 ```mermaid
 graph TD
     subgraph "Pokročilé 2026 Mechanizmy"
-        GC["1. harness gc<br/>(GraphGc.decide)"]
+        GC["1. harness gc --strict<br/>(GraphGc.decide)"]
         HANDOFF["2. Context Reset & Handoff<br/>(SessionHandoff.decide)"]
         BUDGET["3. Runtime Span Budgets<br/>(SpanBudget.decide)"]
         WORKTREE["4. Worktree-Safe Izolácia<br/>(resolveHarnessStateDir)"]
+        GATES["5. Security & Migration Gates<br/>(syntax-bans & MigrationSafety)"]
+        LENSES["6. Multi-Lens Review<br/>(Signal-Routed flash Subagents)"]
     end
 
-    GC -->|Audituje| G_ENTROPY["unused-service<br/>unprovided-service<br/>dead-tagged-error<br/>orphan-effect-fn<br/>missing-pattern-doc"]
+    GC -->|Audituje| G_ENTROPY["unused-service<br/>unprovided-service<br/>dead-tagged-error<br/>orphan-effect-fn<br/>untested-effect-fn<br/>missing-pattern-doc"]
     HANDOFF -->|Injektuje| HO_DATA["activeStubs<br/>missingPlannedFns<br/>verify-stamp stav<br/>friction clusters"]
     BUDGET -->|Deteguje| B_VIOLATION["n-plus-one-call<br/>span-duration-exceeded"]
     WORKTREE -->|Izoluje| WT_DIR[".harness/worktrees/&lt;id&gt;<br/>HARNESS_WORKTREE_ID"]
+    GATES -->|Blokuje| G_SAFETY["Config.redacted<br/>raw SQL injection<br/>Schedule.forever<br/>DROP / rebuild / NOT NULL"]
+    LENSES -->|Overuje| L_SPECIALISTS["EARS & Test-Fidelity<br/>Security & Trust<br/>Reliability & Concurrency<br/>Adversarial Chaos"]
 ```
 
 ### 6.1 `harness gc` (`GraphGc.decide` — Boj proti entropii a mŕtvemu kódu)
 
-Počas rýchlych iterácií v subagentoch dochádza k hromadeniu mŕtveho kódu, ktorý bežný TypeScript kompilátor toleruje. Príkaz `harness gc` spúšťa statickú analýzu nad celým `HarnessGraph` a pomocou čistej rozhodovacej funkcie `GraphGc.decide` identifikuje 5 druhov entropie:
+Počas rýchlych iterácií v subagentoch dochádza k hromadeniu mŕtveho kódu, ktorý bežný TypeScript kompilátor toleruje. Príkaz `harness gc` spúšťa statickú analýzu nad celým `HarnessGraph` a pomocou čistej rozhodovacej funkcie `GraphGc.decide` identifikuje 6 druhov entropie:
 
 1. **`unused-service`:** Služba (`Context.Service`), ktorú v monorepe nepožaduje žiadna funkcia v parametri prostredia `R`.
 2. **`unprovided-service`:** Služba požadovaná doménou v type `R`, ktorá však nie je poskytnutá žiadnym produkčným `Layer`om v `type:infra` ani `type:app`.
 3. **`dead-tagged-error`:** Chybová trieda (`Schema.TaggedErrorClass`), ktorú žiadna use-case funkcia nevracia v type `E`.
 4. **`orphan-effect-fn`:** Funkcia deklarovaná cez `Effect.fn`, na ktorú neodkazuje žiadny volajúci ani integračný test.
-5. **`missing-pattern-doc`:** Použitý architektonický blok, ku ktorému chýba zdokumentovaný predpis v `agent-patterns/*.md`.
+5. **`untested-effect-fn` (pri `--strict`):** Doménová funkcia deklarovaná cez `Effect.fn`, ktorá nemá v grafe prichádzajúcu `ExercisesSpan` hranu z `@effect/vitest` testov. Každý doménový use-case musí byť overený aspoň jedným testom.
+6. **`missing-pattern-doc`:** Použitý architektonický blok, ku ktorému chýba zdokumentovaný predpis v `agent-patterns/*.md`.
 
 ```bash
-node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts gc
+node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts gc --strict
 ```
 Ak `harness gc` nájde akúkoľvek entropiu, vráti `exit 1` s podrobným zoznamom `findings`. Tento krok predchádza `harness verify` a zabraňuje zlučovaniu technického dlhu.
 
@@ -737,6 +747,46 @@ export const resolveHarnessStateDir = (
 - **Antigravity:** Subagenty sa spúšťajú s parametrom `Workspace: "share"`.
 - **Súbežné CLI príkazy:** Každý subagent nastavuje `HARNESS_WORKTREE_ID=<unit>` (alebo `HARNESS_STATE_DIR`), vďaka čomu sa jeho dočasné pečiatky a medzistavy ukladajú do `.harness/worktrees/<id>/` a nekolidujú s ostatnými subagentmi.
 
+### 6.5 Deterministické Security, Reliability & Migration Brány (`syntax-bans.js` + `MigrationSafety.decide` + `untested-effect-fn`)
+
+Harness presadzuje nulovú dôveru voči generovanému kódu prostredníctvom prísnych statických kontrol a AST pravidiel:
+
+1. **`Config.redacted` pre tajomstvá a kľúče:**
+   - Každá konfigurácia obsahujúca citlivé údaje s kľúčmi ako `SECRET`, `TOKEN`, `PASSWORD` alebo `API_KEY` musí byť zapuzdrená cez `Config.redacted(...)` namiesto obyčajného `Config.string(...)`.
+   - Tým sa zabráni nechcenému úniku citlivých hodnôt do logov, tracerov alebo chybových hlásení.
+2. **Zákaz raw SQL interpolácie (SQL Injection Ban):**
+   - V `type:infra` (D1, SQLite, Drizzle) je prísne zakázané používať template literal interpoláciu v metódach `.exec(\`...\${...}\`)` alebo `.prepare(\`...\${...}\`)`.
+   - Všetky dynamické hodnoty musia byť odovzdávané výhradne cez parametrizované dotazy (`.bind(...)` alebo Drizzle `sql` tagy s parametrami).
+3. **Pravidlá čistoty domény (`type:domain`):**
+   - **Zákaz nečistých globálnych volaní:** Volania `Date.now()`, `new Date()` a `Math.random()` sú v doméne zakázané. Čas a náhodnosť musia pretekať cez Effect služby (`Clock`, `Random`) alebo decider vstupy, aby bola doménová logika 100% deterministická a testovateľná.
+   - **Zákaz `Effect.ignore`:** V doméne je zakázané ignorovať zlyhania cez `Effect.ignore`, pretože to maskuje kritické sad-path stavy a zlyhania biznis pravidiel.
+4. **Zákaz neohraničeného `Schedule.forever` v `Effect.retry`:**
+   - Pokusy o neohraničené znovuspustenie (`Schedule.forever`) v kombinácii s `Effect.retry` vedú v cloudovom serverless prostredí (Cloudflare Workers / DO) k vyčerpaniu pamäte, zamrznutiu vlákna a nekonečným slučkám.
+   - Povolené sú iba ohraničené politiky s jitterom a stropom (napr. `Schedule.exponential(...) |> Schedule.intersect(Schedule.recurs(5))`).
+5. **`MigrationSafety.decide` (Detekcia nebezpečných D1/SQLite migrácií):**
+   - Simuluje a analyzuje vygenerované SQL migračné skripty:
+     - Deteguje deštruktívne príkazy `DROP TABLE`, `DROP COLUMN`, `DROP INDEX`.
+     - Deteguje SQLite table rebuildy vytvárajúce dočasné tabuľky `__new_<table_name>`, ktoré môžu spôsobiť stratu dát pri veľkých datasetoch.
+     - Deteguje `ALTER TABLE ... ADD COLUMN ... NOT NULL` bez explicitnej klauzuly `DEFAULT`, čo v SQLite spôsobí zlyhanie pri existujúcich riadkoch.
+   - Pri detekcii takýchto operácií skript okamžite končí s **`exit 2` a statusom `ESCALATE`**, čím si vyžiada explicitné potvrdenie používateľom.
+6. **`untested-effect-fn` v `harness gc --strict`:**
+   - Kontroluje, že každý doménový `EffectFn` má v kompilovanom grafe prichádzajúcu `ExercisesSpan` hranu z testov. Neotestovaná doménová funkcia je považovaná za zlyhanie brány.
+
+### 6.6 Signal-Routed Multi-Lens Review (`flash` špecializované šošovky v `executing-effect-stubs` & `planning-effect-skeletons`)
+
+Pred spustením finálnych brán `harness gc --strict` a `harness verify` koordinátor nespúšťa jediného generického recenzenta, ale smeruje kontrolu cez **paralelné špecializované subagenty (`research` subagents s modelom `flash` a `Workspace: "share"`)**. 
+
+Výber šošoviek je riadený signálmi — presným zoznamom balíkov a schopností, ktoré daná úloha modifikovala:
+
+| Špecializovaná šošovka (Lens) | Kedy sa spúšťa (Aktivácia signálom) | Zameranie kontroly a odhaľované riziká |
+| :--- | :--- | :--- |
+| **1. `EARS & Test-Fidelity Lens`** | **Vždy** (každá úloha) | Overuje, že každá EARS klauzula (`WHEN`, `IF/THEN`, `WHILE`) má citlivé testovacie tvrdenie v `@effect/vitest`. Odmieta prázdne/mock-only testy a prísne kontroluje pokrytie sad-path vetiev pre všetky deklarované `TaggedError`s. |
+| **2. `Security & Trust-Boundary Lens`** | Pri zásahu do `type:contract`, `HttpApi`, `Rpc`, auth alebo `Config` | Kontroluje autorizáciu aktéra a tenanta (prevencia IDOR) v use-caseoch, správu tajomstiev cez `Config.redacted`, a reštrikcie na vstupných Schémach (ohraničené dĺžky reťazcov, polí, konečné čísla `Schema.Finite`). |
+| **3. `Reliability & Concurrency Lens`** | Pri zásahu do `type:infra`, DO SQLite, D1, Queues, `Schedule` alebo `Scope` | Kontroluje striktnú synchrónnu SQLite transakčnú disciplínu v DO (zákaz asynchrónneho I/O vo vnútri `runSyncTransaction`), ohraničené retry stratégie s jitterom a limitom, timeouty na externých `HttpClient` volaniach a bezpečné finišéry v `Scope`. |
+| **4. `Adversarial Chaos Lens`** | Pri stavových a viac-krokových tokoch, Event Sourcingu, Outboxe, Projekciách a Process Manageroch | Simuluje rolu chaos inžiniera: konštruuje konkrétne sekvencie zlyhaní (duplicitné doručenie `commandId`, out-of-order správy v Queue, crash medzi commitom do SQLite a odoslaním DO alarmu / správy do frontu). |
+
+Okrem fázy implementácie sa **Adversarial & Feasibility Lens** zapája už v Krok 2/3 (`planning-effect-skeletons`), kde po úspešnom `harness plan-check` audituje graf skeletonu pred pridelením práce implementátorom (idempotency kľúče v kontraktoch, reprezentácia čiastočných zlyhaní v `E` a `R`, čistota deciderov).
+
 ---
 
 ## 7. Zhrnutie kľúčových pravidiel pre agentov
@@ -746,4 +796,4 @@ export const resolveHarnessStateDir = (
 3. **Platnosť pečiatky je krehká:** Príkaz `harness verify` musí byť spustený ako úplne posledný krok po akýchkoľvek úpravách kódu. Akákoľvek následná zmena súboru zneplatní hash stromu v `.harness/verify-stamp.json` a zablokuje `harness done`.
 4. **Respektujte eskalácie:** Ak `openapi:check` alebo `migration:check` skončí s kódom `exit 2` a reťazcom `ESCALATE`, okamžite zastavte prácu a predložte breaking zmenu alebo deštruktívnu migráciu na rozhodnutie používateľovi.
 5. **Nenafukujte `AGENTS.md`:** Opakujúce sa problémy riešte výhradne cez skill `compounding-effect-learnings` a 4 ciele povýšenia (Graduation Pyramid).
-6. **Čistota grafu a rozpočty:** Pred `verify` overte absenciu mŕtveho kódu cez `harness gc` a v testoch presadzujte span rozpočty cez `checkSpanBudgets`.
+6. **Čistota grafu, brány a rozpočty:** Pred `verify` overte absenciu mŕtveho a netestovaného kódu cez `harness gc --strict`, dodržujte bezpečnostné zákazy v `syntax-bans.js`, rešpektujte `MigrationSafety.decide` a v testoch presadzujte span rozpočty cez `checkSpanBudgets`.

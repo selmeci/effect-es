@@ -8,12 +8,12 @@ import { execFileSync } from "node:child_process"
 import { cp, mkdtemp, readdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+// oxlint-disable-next-line @nx/enforce-module-boundaries
+import { checkMigrationSqlSafety } from "../../../harness/gates/src/migration-check.ts"
 
 const packageRoot = join(import.meta.dirname, "..")
 const migrationsDir = join(packageRoot, "migrations")
 const schemaPath = join(packageRoot, "src/db/schema.ts")
-
-const destructive = /\bDROP\s+(TABLE|COLUMN|INDEX|TRIGGER|VIEW)\b/i
 
 const listSql = async (dir) => {
   try {
@@ -63,16 +63,24 @@ const run = async () => {
       process.exitCode = 0
       return
     }
+
+    const sqlFiles = []
     for (const file of newFiles) {
       const sql = await readFile(join(outDir, file), "utf8")
-      if (destructive.test(sql)) {
-        console.error(
-          `migration check: ESCALATE — destructive drift requires a human decision (${file}):\n${sql}`
-        )
-        process.exitCode = 2
-        return
-      }
+      sqlFiles.push({ file, sql })
     }
+
+    const report = checkMigrationSqlSafety(sqlFiles)
+    if (report.requiresEscalation) {
+      for (const v of report.violations) {
+        console.error(
+          `migration check: ESCALATE — ${v.message} (${v.file}):\n${v.statement}`
+        )
+      }
+      process.exitCode = 2
+      return
+    }
+
     console.error(`migration check: FAIL — schema changed without a committed migration:\n${newFiles.join("\n")}`)
     process.exitCode = 1
     return

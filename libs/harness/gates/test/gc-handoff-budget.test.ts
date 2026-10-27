@@ -5,8 +5,10 @@ import { Effect } from "effect"
 import { buildHarnessGraph, loadGraphSnapshot } from "@harness/graph"
 import {
   buildSessionHandoff,
+  checkMigrationSqlSafety,
   checkSpanBudgets,
   decideGraphEntropy,
+  decideMigrationSafety,
   decideSessionHandoff,
   decideSpanBudgets,
   diffPlanAndImplGraphs,
@@ -192,6 +194,141 @@ describe("Harness Gates: GC check, Session Handoff, Span Budget, and State Dir",
 
       expect(report.clean).toBe(true)
       expect(report.findings).toHaveLength(0)
+    })
+
+    it.effect("flags untested domain EffectFn when checkUntestedDomainFns: true, passes once tested", () =>
+      Effect.gen(function* () {
+        const fnNode = {
+          qualname: "libs/sample/domain/src/index.ts#greet",
+          spanName: "Sample.greet",
+          packageTag: "domain" as const,
+          file: "libs/sample/domain/src/index.ts",
+          line: 9,
+          successType: "string",
+          isStub: false
+        }
+
+        const graphWithoutTest = buildHarnessGraph({
+          fns: [fnNode]
+        })
+
+        const reportUntested = yield* decideGraphEntropy({
+          graph: graphWithoutTest,
+          checkUntestedDomainFns: true
+        })
+
+        expect(reportUntested.clean).toBe(false)
+        const untested = reportUntested.findings.find((f) => f.kind === "untested-effect-fn")
+        expect(untested).toBeDefined()
+        expect(untested?.nodeId).toBe("Sample.greet")
+        expect(untested?.message).toContain("has 0 reaching tests")
+
+        // Now add a VitestCase and ExercisesSpan edge
+        const graphWithTest = buildHarnessGraph({
+          fns: [fnNode],
+          tests: [
+            {
+              testId: "libs/sample/domain/test/index.test.ts::suite",
+              testFile: "libs/sample/domain/test/index.test.ts",
+              testName: "libs/sample/domain/test/index.test.ts",
+              lastTreeHash: "workspace"
+            }
+          ],
+          exercisesSpans: [
+            {
+              testId: "libs/sample/domain/test/index.test.ts::suite",
+              calleeQualname: "libs/sample/domain/src/index.ts#greet",
+              callCount: 1,
+              receiverLayer: null
+            }
+          ]
+        })
+
+        const reportTested = yield* decideGraphEntropy({
+          graph: graphWithTest,
+          checkUntestedDomainFns: true
+        })
+
+        const untestedAfter = reportTested.findings.filter((f) => f.kind === "untested-effect-fn")
+        expect(untestedAfter).toHaveLength(0)
+        expect(reportTested.clean).toBe(true)
+      })
+    )
+  })
+
+  describe("decideMigrationSafety / checkMigrationSqlSafety", () => {
+    it.effect("reports safe: true for clean CREATE TABLE and ALTER TABLE ADD COLUMN with DEFAULT", () =>
+      Effect.gen(function* () {
+        const report = yield* decideMigrationSafety({
+          files: [
+            {
+              file: "migrations/0001_init.sql",
+              sql: `
+                CREATE TABLE users (
+                  id INTEGER PRIMARY KEY,
+                  name TEXT NOT NULL
+                );
+                --> statement-breakpoint
+                ALTER TABLE users ADD COLUMN age INTEGER NOT NULL DEFAULT 0;
+              `
+            }
+          ]
+        })
+
+        expect(report.safe).toBe(true)
+        expect(report.requiresEscalation).toBe(false)
+        expect(report.violations).toHaveLength(0)
+      })
+    )
+
+    it("detects DROP TABLE, table rebuild, and ADD NOT NULL without DEFAULT via checkMigrationSqlSafety", () => {
+      const report = checkMigrationSqlSafety([
+        {
+          file: "migrations/0002_drop.sql",
+          sql: "DROP TABLE users;"
+        },
+        {
+          file: "migrations/0003_rebuild.sql",
+          sql: "CREATE TABLE `__new_users` (id INTEGER PRIMARY KEY); PRAGMA foreign_keys=OFF;"
+        },
+        {
+          file: "migrations/0004_not_null.sql",
+          sql: "ALTER TABLE photos ADD COLUMN owner_id TEXT NOT NULL;"
+        }
+      ])
+
+      expect(report.safe).toBe(false)
+      expect(report.requiresEscalation).toBe(true)
+      expect(report.violations).toHaveLength(4)
+
+      const kinds = report.violations.map((v) => v.kind)
+      expect(kinds).toContain("drop-statement")
+      expect(kinds).toContain("table-rebuild")
+      expect(kinds).toContain("add-not-null-without-default")
+
+      const notNull = report.violations.find((v) => v.kind === "add-not-null-without-default")
+      expect(notNull?.file).toBe("migrations/0004_not_null.sql")
+      expect(notNull?.message).toContain("ALTER TABLE ADD COLUMN NOT NULL without DEFAULT")
+    })
+
+    it("resists SQL comment spoofing of DEFAULT and detects SQLite ALTER TABLE DROP <col> without COLUMN keyword", () => {
+      const report = checkMigrationSqlSafety([
+        {
+          file: "migrations/0005_adversarial.sql",
+          sql: `
+            -- DEFAULT 0 should not bypass NOT NULL check
+            ALTER TABLE "default" ADD COLUMN tenant_id TEXT NOT NULL /* DEFAULT 'none' */;
+            ALTER TABLE users DROP is_admin;
+          `
+        }
+      ])
+
+      expect(report.safe).toBe(false)
+      expect(report.requiresEscalation).toBe(true)
+      expect(report.violations.map((v) => v.kind)).toEqual([
+        "add-not-null-without-default",
+        "drop-statement"
+      ])
     })
   })
 
