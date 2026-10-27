@@ -83,6 +83,7 @@ const IGNORED_UNTESTED_FNS = new Set([
   "EarsSpecLint.decide",
   "AdrDocLint.decide",
   "OntologyInvariants.decide",
+  "SessionReport.decide",
   "Harness.checkOntologyPairConflict",
   "Harness.evaluateOntologyConflicts"
 ])

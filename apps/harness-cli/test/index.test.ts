@@ -25,6 +25,7 @@ describe("harness cli baseline", () => {
       "session",
       "doctor",
       "ontology",
+      "report",
       "help"
     ])
     for (const command of COMMANDS) {
@@ -383,6 +384,8 @@ describe("harness-cli v2 commands", () => {
         })
         expect(green.exitCode).toBe(0)
         expect(green.stdout).toBe("")
+        expect(existsSync(join(dir, ".harness", "session-report.json"))).toBe(true)
+        expect(existsSync(join(dir, ".harness", "session-report.md"))).toBe(true)
 
         // Mutate a file to make stamp stale
         writeFileSync(join(dir, "a.ts"), "export const a = 2\n")
@@ -611,6 +614,42 @@ describe("harness-cli v2 commands", () => {
         expect(payload.injectSteps).toHaveLength(1)
         expect(payload.injectSteps[0]).toContain("[Harness Context Handoff]")
         expect(payload.injectSteps[0]).toContain("Sample.pendingFn")
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe("report", () => {
+    it("generates session report JSON, writes markdown and json files, and respects --clear", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "harness-cli-report-"))
+      try {
+        await runCli(["guard", "pnpm test"], { repoRoot: dir })
+        await runCli(["route", "Add schema"], {
+          repoRoot: dir,
+          decisionLayer: makeMockDecisionModelLayer({ fitsAnyProb: 0.9, blockLabel: "effect" })
+        })
+
+        const res = await runCli(["report"], { repoRoot: dir })
+        expect(res.exitCode).toBe(0)
+        const report = JSON.parse(res.stdout)
+        expect(report.totalEvents).toBeGreaterThanOrEqual(2)
+        expect(report.healthScore).toBeGreaterThanOrEqual(0)
+        expect(report.healthScore).toBeLessThanOrEqual(100)
+        expect(["A", "B", "C", "D"]).toContain(report.grade)
+        expect(report.kpis).toBeDefined()
+        expect(existsSync(join(dir, ".harness", "session-report.json"))).toBe(true)
+        expect(existsSync(join(dir, ".harness", "session-report.md"))).toBe(true)
+
+        const mdRes = await runCli(["report", "--format=markdown"], { repoRoot: dir })
+        expect(mdRes.exitCode).toBe(0)
+        expect(mdRes.stdout).toContain("# Harness Session Observability Report")
+        expect(mdRes.stdout).toContain("Key Performance Indicators")
+
+        const clearRes = await runCli(["report", "--clear"], { repoRoot: dir })
+        expect(clearRes.exitCode).toBe(0)
+        const clearedReport = JSON.parse(clearRes.stdout)
+        expect(clearedReport.totalEvents).toBe(0)
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }

@@ -32,6 +32,16 @@ import {
   LocalDecisionModel,
   routeStep
 } from "@harness/decision"
+import {
+  appendTelemetryEvent,
+  buildSessionReport,
+  readFrictionEvents,
+  readTelemetryEvents,
+  renderSessionReportMarkdown,
+  type TelemetryCategory,
+  type TelemetryEngineSource,
+  type TelemetryOutcome
+} from "@harness/gates"
 
 export class UnknownToolError extends Schema.TaggedError<UnknownToolError>()(
   "UnknownToolError",
@@ -99,30 +109,38 @@ export const executeToolEffect = (
   options?: ServerOptions
 ): Effect.Effect<unknown, UnknownToolError> =>
   Effect.gen(function* () {
+    const startTime = performance.now()
+    let result: unknown
+
     switch (toolName) {
       case "harness_resolve": {
         const symbolOrSpan = (args as { symbolOrSpan: string }).symbolOrSpan
         const graph = yield* resolveGraph(options)
-        return resolveNode(graph, symbolOrSpan) ?? null
+        result = resolveNode(graph, symbolOrSpan) ?? null
+        break
       }
       case "harness_callers": {
         const symbolOrSpan = (args as { symbolOrSpan: string }).symbolOrSpan
         const graph = yield* resolveGraph(options)
-        return findCallers(graph, symbolOrSpan)
+        result = findCallers(graph, symbolOrSpan)
+        break
       }
       case "harness_callees": {
         const symbolOrSpan = (args as { symbolOrSpan: string }).symbolOrSpan
         const graph = yield* resolveGraph(options)
-        return findCallees(graph, symbolOrSpan)
+        result = findCallees(graph, symbolOrSpan)
+        break
       }
       case "harness_tests_reaching": {
         const symbolOrSpan = (args as { symbolOrSpan: string }).symbolOrSpan
         const graph = yield* resolveGraph(options)
-        return findTestsReaching(graph, symbolOrSpan)
+        result = findTestsReaching(graph, symbolOrSpan)
+        break
       }
       case "harness_structural_search": {
         const pattern = (args as { pattern: string }).pattern
-        return structuralSearch({ pattern })
+        result = structuralSearch({ pattern })
+        break
       }
       case "harness_route": {
         const planStep = (args as { planStep: string }).planStep
@@ -137,17 +155,20 @@ export const executeToolEffect = (
           block === "review" || block === "effect"
             ? null
             : `agent-patterns/${block}.md`
-        return { block, patternFile }
+        result = { block, patternFile }
+        break
       }
       case "harness_ontology_why": {
         const symbolOrSpan = (args as { symbolOrSpan: string }).symbolOrSpan
         const graph = yield* resolveGraph(options)
-        return queryOntologyWhy(graph, symbolOrSpan)
+        result = queryOntologyWhy(graph, symbolOrSpan)
+        break
       }
       case "harness_ontology_impact": {
         const symbolOrSpan = (args as { symbolOrSpan: string }).symbolOrSpan
         const graph = yield* resolveGraph(options)
-        return queryOntologyImpact(graph, symbolOrSpan)
+        result = queryOntologyImpact(graph, symbolOrSpan)
+        break
       }
       case "harness_ontology_check": {
         const scope = (args as { scope?: string | undefined }).scope
@@ -164,7 +185,7 @@ export const executeToolEffect = (
           Effect.provide(decisionLayer)
         )
         const projection = projectOntologyLayers(graph)
-        return {
+        result = {
           clean: invariants.clean && semanticConflicts.length === 0,
           findings: invariants.findings,
           semanticConflicts,
@@ -177,23 +198,86 @@ export const executeToolEffect = (
             Implementation: projection.layers.Implementation.length
           }
         }
+        break
       }
       case "harness_gq_query": {
         const queryName = (args as { queryName: HarnessGqQueryName }).queryName
         const params = (args as { params?: Record<string, unknown> | undefined }).params
         const branch = (args as { branch?: string | undefined }).branch
         const graph = yield* resolveGraph(options)
-        return yield* invokeOmnigraphNamedQuery({
+        result = yield* invokeOmnigraphNamedQuery({
           name: queryName,
           params,
           branch,
           fallbackGraph: graph
         }).pipe(Effect.provide(OmnigraphSync.Live))
+        break
+      }
+      case "harness_telemetry_report": {
+        const format = (args as { format?: "json" | "markdown" | undefined }).format
+        const root = options?.repoRoot ?? findRepoRoot(process.cwd())
+        const events = readTelemetryEvents(root)
+        const frictionEvents = readFrictionEvents(root)
+        const report = buildSessionReport({ events, frictionEvents })
+        if (format === "markdown") {
+          return { markdown: renderSessionReportMarkdown(report), report }
+        }
+        return report
       }
       default: {
         return yield* new UnknownToolError({ toolName })
       }
     }
+
+    const durationMs = Math.max(0, Math.round(performance.now() - startTime))
+    if (options?.repoRoot !== undefined || process.env.VITEST === undefined) {
+      const root = options?.repoRoot ?? findRepoRoot(process.cwd())
+      let category: TelemetryCategory = "graph_query"
+      if (
+        toolName === "harness_ontology_why" ||
+        toolName === "harness_ontology_impact" ||
+        toolName === "harness_ontology_check"
+      ) {
+        category = "ontology"
+      } else if (toolName === "harness_route") {
+        category = "routing"
+      } else {
+        category = "graph_query"
+      }
+
+      let engineSource: TelemetryEngineSource = "local"
+      if (toolName === "harness_gq_query") {
+        engineSource =
+          typeof result === "object" &&
+          result !== null &&
+          "source" in result &&
+          result.source === "omnigraph"
+            ? "omnigraph"
+            : "memory-fallback"
+      } else if (toolName === "harness_route" || toolName === "harness_ontology_check") {
+        engineSource = "decision-model"
+      } else {
+        engineSource = "local"
+      }
+
+      let outcome: TelemetryOutcome = "ok"
+      if (toolName === "harness_gq_query" && engineSource === "memory-fallback") {
+        outcome = "fallback"
+      } else {
+        outcome = "ok"
+      }
+
+      appendTelemetryEvent(root, {
+        surface: "mcp",
+        category,
+        toolName,
+        outcome,
+        durationMs,
+        engineSource
+      })
+    }
+
+    return result
   })
 
 export const executeTool = (
@@ -371,6 +455,25 @@ export const createServer = (options?: ServerOptions): McpServer => {
     (args) =>
       Effect.runPromise(
         executeToolEffect("harness_gq_query", args, options).pipe(
+          Effect.map((data) => ({
+            content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
+          }))
+        )
+      )
+  )
+
+  server.tool(
+    "harness_telemetry_report",
+    "Generate a session observability and tool-usage health report across CLI, hooks, and MCP tools",
+    {
+      format: z
+        .enum(["json", "markdown"])
+        .optional()
+        .describe("Report output format (defaults to 'json')")
+    },
+    (args) =>
+      Effect.runPromise(
+        executeToolEffect("harness_telemetry_report", args, options).pipe(
           Effect.map((data) => ({
             content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
           }))

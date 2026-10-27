@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
 import { makeMockDecisionModelLayer } from "@harness/decision"
@@ -294,6 +297,49 @@ status: accepted
       }
       expect(res.source).toBe("memory-fallback")
       expect(Array.isArray(res.rows)).toBe(true)
+    })
+  )
+
+  it.effect("executes harness_telemetry_report and formats report after running MCP tools", () =>
+    Effect.gen(function* () {
+      const tmpDir = mkdtempSync(join(tmpdir(), "harness-mcp-telemetry-"))
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          rmSync(tmpDir, { recursive: true, force: true })
+        })
+      )
+
+      yield* executeToolEffect(
+        "harness_ontology_why",
+        { symbolOrSpan: "PhotoRepo" },
+        { repoRoot: tmpDir, graph }
+      )
+
+      yield* executeToolEffect(
+        "harness_gq_query",
+        { queryName: "ontology_layer_nodes", params: { layer: "Business" } },
+        { repoRoot: tmpDir, graph }
+      )
+
+      const raw = yield* executeToolEffect(
+        "harness_telemetry_report",
+        { format: "markdown" },
+        { repoRoot: tmpDir, graph }
+      )
+
+      const res = raw as {
+        readonly markdown: string
+        readonly report: {
+          readonly totalEvents: number
+          readonly kpis: { readonly graphDiscoveryCalls: number }
+        }
+      }
+
+      expect(typeof res.markdown).toBe("string")
+      expect(res.markdown).toContain("# Harness Session Observability Report")
+      expect(res.markdown).toContain("Key Performance Indicators")
+      expect(res.report.totalEvents).toBe(2)
+      expect(res.report.kpis.graphDiscoveryCalls).toBe(2)
     })
   )
 })

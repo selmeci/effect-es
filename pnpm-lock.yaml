@@ -235,6 +235,9 @@ importers:
       '@harness/decision':
         specifier: workspace:*
         version: link:../../libs/harness/decision
+      '@harness/gates':
+        specifier: workspace:*
+        version: link:../../libs/harness/gates
       '@harness/graph':
         specifier: workspace:*
         version: link:../../libs/harness/graph

@@ -19,22 +19,32 @@ import {
 } from "@harness/decision"
 import {
   appendFrictionEvent,
+  appendTelemetryEvent,
   buildSessionHandoff,
+  buildSessionReport,
   checkLoopThrashing,
   checkVerifyStamp,
   classifyCommand,
   classifyFileWrite,
   clearFrictionEvents,
+  clearTelemetryEvents,
   decideOntologyInvariants,
   diffPlanAndImplGraphs,
   type FrictionEventKind,
   type GovernanceDocReference,
   loadGovernanceDocsFromDisk,
   readFrictionEvents,
+  readTelemetryEvents,
+  renderSessionReportMarkdown,
   resolveHarnessStateDir,
   runDomainMutationSuite,
   scanGraphEntropy,
   summarizeFrictionEvents,
+  type TelemetryCategory,
+  type TelemetryEngineSource,
+  type TelemetryOutcome,
+  type TelemetrySurface,
+  writeSessionReportFiles,
   writeVerifyStamp
 } from "@harness/gates"
 import {
@@ -65,6 +75,7 @@ export const COMMANDS = [
   "session",
   "doctor",
   "ontology",
+  "report",
   "help"
 ] as const
 
@@ -384,6 +395,25 @@ const recordFriction = (
   }
   const repoRoot = options?.repoRoot ?? findWorkspaceRoot()
   appendFrictionEvent(repoRoot, event)
+}
+
+const recordTelemetry = (
+  options: CliEnv | undefined,
+  event: {
+    readonly surface: TelemetrySurface
+    readonly category: TelemetryCategory
+    readonly toolName: string
+    readonly outcome: TelemetryOutcome
+    readonly durationMs: number
+    readonly engineSource?: TelemetryEngineSource | undefined
+    readonly detail?: string | undefined
+  }
+): void => {
+  if (options?.repoRoot === undefined && process.env.VITEST !== undefined) {
+    return
+  }
+  const repoRoot = options?.repoRoot ?? findWorkspaceRoot()
+  appendTelemetryEvent(repoRoot, event)
 }
 
 const handleRoute = (
@@ -729,6 +759,15 @@ const handleDone = (
     )
 
     // 5. All checks passed
+    if (options?.repoRoot !== undefined || process.env.VITEST === undefined) {
+      const report = buildSessionReport({
+        events: readTelemetryEvents(repoRoot),
+        frictionEvents: readFrictionEvents(repoRoot),
+        stampValid: true
+      })
+      writeSessionReportFiles(repoRoot, report)
+    }
+
     return {
       exitCode: 0,
       stdout: isAntigravity ? JSON.stringify({ decision: "stop" }) : "",
@@ -805,6 +844,13 @@ const handleDoctorOrSession = (
       loopThrashing
     })
 
+    const telemetryEvents = readTelemetryEvents(repoRoot)
+    const telemetryReport = buildSessionReport({
+      events: telemetryEvents,
+      frictionEvents: events,
+      stampValid: effectiveStampValid
+    })
+
     const ok = nodeOk && snapshotDirOk
 
     if (isAntigravity) {
@@ -825,7 +871,12 @@ const handleDoctorOrSession = (
         snapshotDirOk,
         omnigraphInitialized,
         modelWarm,
-        handoff
+        handoff,
+        telemetry: {
+          totalEvents: telemetryReport.totalEvents,
+          healthScore: telemetryReport.healthScore,
+          grade: telemetryReport.grade
+        }
       }),
       stderr: ok ? "" : `Doctor check failed: nodeOk=${nodeOk}, snapshotDirOk=${snapshotDirOk}`
     }
@@ -1003,6 +1054,41 @@ const handleOntology = (
     }
   })
 
+const handleReport = (
+  argv: ReadonlyArray<string>,
+  options: CliEnv | undefined
+): Effect.Effect<CliResult> =>
+  Effect.gen(function* () {
+    yield* Effect.void
+    const repoRoot = options?.repoRoot ?? findWorkspaceRoot()
+    if (argv.includes("--reset") || argv.includes("--clear")) {
+      clearTelemetryEvents(repoRoot)
+    }
+    const events = readTelemetryEvents(repoRoot)
+    const frictionEvents = readFrictionEvents(repoRoot)
+    const stampCheck = checkVerifyStamp(repoRoot)
+    const report = buildSessionReport({
+      events,
+      frictionEvents,
+      stampValid: stampCheck.valid
+    })
+    if (options?.repoRoot !== undefined || process.env.VITEST === undefined) {
+      writeSessionReportFiles(repoRoot, report)
+    }
+    if (argv.includes("--format=markdown")) {
+      return {
+        exitCode: 0,
+        stdout: renderSessionReportMarkdown(report),
+        stderr: ""
+      }
+    }
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify(report),
+      stderr: ""
+    }
+  })
+
 export const runCliEffect = (
   argv: ReadonlyArray<string>,
   options?: CliEnv
@@ -1019,47 +1105,147 @@ export const runCliEffect = (
       }
     }
 
+    if (requested === "help") {
+      return {
+        exitCode: 0,
+        stdout: `harness help\nusage: harness <${COMMANDS.join("|")}>`,
+        stderr: ""
+      }
+    }
+
+    if (requested === "report") {
+      return yield* handleReport(argv, options)
+    }
+
+    let resEffect: Effect.Effect<CliResult>
     switch (requested) {
       case "guard":
-        return yield* handleGuard(argv, options, decisionLayer)
+        resEffect = handleGuard(argv, options, decisionLayer)
+        break
       case "route":
-        return yield* handleRoute(argv, options, decisionLayer)
+        resEffect = handleRoute(argv, options, decisionLayer)
+        break
       case "plan-check":
-        return yield* handlePlanCheck(argv, options)
+        resEffect = handlePlanCheck(argv, options)
+        break
       case "verify":
-        return yield* handleVerify(options, decisionLayer)
+        resEffect = handleVerify(options, decisionLayer)
+        break
       case "done":
-        return yield* handleDone(argv, options, decisionLayer)
+        resEffect = handleDone(argv, options, decisionLayer)
+        break
       case "learn":
-        return yield* handleLearn(argv, options, decisionLayer)
+        resEffect = handleLearn(argv, options, decisionLayer)
+        break
       case "gc":
-        return yield* handleGc(argv, options)
+        resEffect = handleGc(argv, options)
+        break
       case "mutate":
-        return yield* handleMutate(argv.slice(1), options)
+        resEffect = handleMutate(argv.slice(1), options)
+        break
       case "ingest": {
         const repoRoot = options?.repoRoot ?? findWorkspaceRoot()
         const isAntigravity = argv.includes("--format=antigravity")
-        const fnIndex = yield* buildWorkspaceFnIndex(repoRoot)
-        return {
-          exitCode: 0,
-          stdout: isAntigravity
-            ? JSON.stringify({})
-            : JSON.stringify({ indexedFns: fnIndex.bySpanName.size }),
-          stderr: ""
-        }
+        resEffect = Effect.gen(function* () {
+          const fnIndex = yield* buildWorkspaceFnIndex(repoRoot)
+          return {
+            exitCode: 0,
+            stdout: isAntigravity
+              ? JSON.stringify({})
+              : JSON.stringify({ indexedFns: fnIndex.bySpanName.size }),
+            stderr: ""
+          }
+        })
+        break
       }
       case "session":
       case "doctor":
-        return yield* handleDoctorOrSession(argv, options, decisionLayer)
+        resEffect = handleDoctorOrSession(argv, options, decisionLayer)
+        break
       case "ontology":
-        return yield* handleOntology(argv, options, decisionLayer)
-      case "help":
-        return {
-          exitCode: 0,
-          stdout: `harness help\nusage: harness <${COMMANDS.join("|")}>`,
-          stderr: ""
-        }
+        resEffect = handleOntology(argv, options, decisionLayer)
+        break
     }
+
+    const startTime = performance.now()
+    const res = yield* resEffect
+    const durationMs = Math.max(0, Math.round(performance.now() - startTime))
+
+    const surface: TelemetrySurface =
+      argv.includes("--format=antigravity") || options?.stdin !== undefined
+        ? "hook"
+        : "cli"
+
+    let category: TelemetryCategory = "lifecycle"
+    if (requested === "guard") {
+      category = "guard"
+    } else if (requested === "route") {
+      category = "routing"
+    } else if (requested === "ontology") {
+      category = "ontology"
+    } else if (
+      requested === "plan-check" ||
+      requested === "verify" ||
+      requested === "gc" ||
+      requested === "mutate"
+    ) {
+      category = "gate"
+    } else {
+      category = "lifecycle"
+    }
+
+    let outcome: TelemetryOutcome = "ok"
+    if (requested === "guard") {
+      if (res.exitCode !== 0 || res.stdout.includes('"decision":"deny"')) {
+        outcome = "deny"
+      } else if (
+        res.stdout.includes('"decision":"ask"') ||
+        res.stdout.includes('"permissionDecision":"ask"')
+      ) {
+        outcome = "ask"
+      } else {
+        outcome = "ok"
+      }
+    } else if (requested === "done") {
+      if (
+        res.stdout.includes('"decision":"continue"') ||
+        res.stdout.includes('"decision":"block"')
+      ) {
+        outcome = "fail"
+      } else {
+        outcome = "ok"
+      }
+    } else if (requested === "route") {
+      outcome = res.stdout === "review" ? "fallback" : "ok"
+    } else {
+      outcome = res.exitCode === 0 ? "ok" : "fail"
+    }
+
+    recordTelemetry(options, {
+      surface,
+      category,
+      toolName: requested === "ontology" ? `ontology:${argv[1] ?? "layers"}` : requested,
+      outcome,
+      durationMs
+    })
+
+    if (
+      requested === "done" &&
+      outcome === "ok" &&
+      (options?.repoRoot !== undefined || process.env.VITEST === undefined)
+    ) {
+      const repoRoot = options?.repoRoot ?? findWorkspaceRoot()
+      const finalEvents = readTelemetryEvents(repoRoot)
+      const finalFriction = readFrictionEvents(repoRoot)
+      const finalReport = buildSessionReport({
+        events: finalEvents,
+        frictionEvents: finalFriction,
+        stampValid: true
+      })
+      writeSessionReportFiles(repoRoot, finalReport)
+    }
+
+    return res
   })
 
 export const runCli = (
