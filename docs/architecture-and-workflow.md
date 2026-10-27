@@ -659,7 +659,7 @@ Agenti v adaptéroch Antigravity a Claude Code používajú skill `compounding-e
 
 V modernom vývojovom procese s paralelnými autonómnymi subagentmi vznikajú špecifické riziká: akumulácia mŕtveho kódu a nezapojených služieb, strata kontextu pri reštarte konverzácie alebo compactingu, skryté výkonnostné degradácie (N+1 databázové a RPC dotazy), kolízie stavových súborov medzi súbežnými pracovníkmi, bezpečnostné zraniteľnosti a deštruktívne databázové migrácie.
 
-Effect-TS Engineering Harness rieši tieto výzvy prostredníctvom šiestich pokročilých deterministických mechanizmov:
+Effect-TS Engineering Harness rieši tieto výzvy prostredníctvom pokročilých deterministických mechanizmov a troch finálnych E1–E8 SDLC ochrán:
 
 ```mermaid
 graph TD
@@ -671,6 +671,7 @@ graph TD
         GATES["5. Security & Migration Gates<br/>(syntax-bans & MigrationSafety)"]
         LENSES["6. Multi-Lens Review<br/>(Signal-Routed flash Subagents)"]
         MUTATE["7. AST Mutation Testing<br/>(MutationCheck.decide)"]
+        SDLC["8. E1–E8 SDLC Protections<br/>(TestIntegrity, LoopBreaker, GuardWrite)"]
     end
 
     GC -->|Audituje| G_ENTROPY["unused-service<br/>unprovided-service<br/>dead-tagged-error<br/>orphan-effect-fn<br/>untested-effect-fn<br/>missing-decider-property-test<br/>missing-pattern-doc<br/>stale-doc-reference"]
@@ -680,6 +681,7 @@ graph TD
     GATES -->|Blokuje| G_SAFETY["Config.redacted<br/>raw SQL injection<br/>Schedule.forever<br/>DROP / rebuild / NOT NULL"]
     LENSES -->|Overuje| L_SPECIALISTS["EARS & Test-Fidelity<br/>Security & Trust<br/>Reliability & Concurrency<br/>Adversarial Chaos"]
     MUTATE -->|Vyžaduje| M_SCORE["100% Mutation Score<br/>0 prežitých mutantov<br/>(>=, <=, ===, +1)"]
+    SDLC -->|Vynucuje| S_RULES["it.skip / @ts-ignore ban<br/>Loop Circuit-Breaker (>=3)<br/>classifyFileWrite (DENY/ASK)"]
 ```
 
 ### 6.1 `harness gc` (`GraphGc.decide` — Boj proti entropii a mŕtvemu kódu)
@@ -882,6 +884,74 @@ Aby sa predišlo vákuovým testom, kde property test síce generuje vstupy, ale
   - Logické spojky: `&&` $\to$ `||`, `||` $\to$ `&&`
 - **Brána 100% Mutation Score:** Pre každého mutanta sa v pamäti skompiluje zmenené AST a spustí sa `@effect/vitest`. Ak testy prejdú, mutant **prežil** (test gap). Ak testy zlyhajú, mutant je **zabitý**. Príkaz `harness mutate --strict` vyžaduje **100% mutation score (0 prežitých mutantov)** predtým, než je povolené spustiť `harness verify`. Tým sa garantuje, že testy majú skutočné "zuby" a zachytia akúkoľvek hraničnú chybu.
 
+### 6.9 Finálne 2026 E1–E8 Agentic SDLC Ochrany (Anti-Subversion, Loop Circuit-Breaker & Chránené Zápisové Povrchy)
+
+V autonómnom softvérovom inžinierstve predstavujú autonómne LLM agenty špecifické riziká vyplývajúce z ich optimalizačného cieľa: uspieť vo verifikácii za každú cenu. Ak agent narazí na náročné zlyhanie testu, typový konflikt alebo bezpečnostnú reštrikciu, vzniká riziko reward hackingu (subverzia testov), uviaznutia v nekonečnej slučke drobných úprav (thrashing loops), alebo pokusov o oslabenie samotných ochranných nástrojov či falšovanie overovacích pečiatok.
+
+Harness MVP v2 uzatvára vývojový cyklus tromi robustnými ochrannými mechanizmami:
+
+#### 1. Trojvrstvová ochrana testov proti subverzii (`E4 §3` — `harness/test-integrity` & Anti-Suppression AST brána)
+
+Keď jednotkový alebo integračný test zlyhá, menej disciplinované modely majú tendenciu vyriešiť problém jeho preskočením (`it.skip`), izolovaním (`it.only`), odložením (`it.todo`), alebo potlačením chybových hlásení kompilátora pomocou direktív `@ts-ignore`. Výsledkom je ilúzia úspešného overenia, hoci skutočný biznis invariant bol znehodnotený.
+
+Harness zavádza v `tools/oxlint/syntax-bans.js` a `.oxlintrc.json` striktnú trojvrstvovú AST kontrolu:
+
+1. **Zákaz preskakovania a izolácie testov v `test/**/*.ts` (`harness/test-integrity`):**
+   - AST pravidlo deteguje a nekompromisne odmieta:
+     - Preskakovanie testov a suít: `it.skip`, `test.skip`, `describe.skip`, `suite.skip`, `it.effect.skip`, `it.prop.skip`, `it.skipIf`, `test.skipIf`, `it.runIf`, ako aj staršie aliasy `xit`, `xtest`, `xdescribe`.
+     - Izoláciu jedného testu: `it.only`, `test.only`, `describe.only`, `suite.only`, `it.effect.only`, `it.prop.only`, `fit`, `fdescribe`.
+     - Neimplementované testy: `it.todo`, `test.todo`.
+   - Každý testovací scenár musí byť plnohodnotne vykonaný; žiadne vynechanie nie je v CI ani lokálnom behu povolené.
+2. **Zákaz potláčania kompilátora a typového systému:**
+   - **V produkčnom kóde (`src/**/*.ts`):** Úplný zákaz direktív `@ts-ignore`, `@ts-expect-error` a `@ts-nocheck`. Typové chyby v doméne, službách či infraštruktúre musia byť vyriešené korektnými Schémami a Effect typmi.
+   - **V testoch (`test/**/*.ts`):** Zákaz nepodmieneného potláčania chýb cez `@ts-ignore` a `@ts-nocheck`. Pre zámerné testovanie nesprávnych typov (negative type tests) je povolený výhradne `@ts-expect-error` s povinným zdôvodnením.
+3. **Celo-monorepový zákaz potláčania pravidiel (Anti-Suppression Ban):**
+   - Zákaz direktív `oxlint-disable` a `eslint-disable` cielene pre pravidlá:
+     - `effecttsgo/*` (pravidlá `@effect/language-service`, napr. `effecttsgo/prefer-effect-gen`, `effecttsgo/no-async-await`).
+     - `harness/*` (`harness/syntax-bans`, `harness/test-integrity`).
+   - Agent nemá právo vypnúť linter komentárom priamo v kóde. Porušenie Effect idiómu alebo testovacej integrity musí byť opravené v implementácii.
+
+#### 2. Detekcia zacyklenia agenta — Stuck-Loop Circuit-Breaker (`E1 §04 Loop` — `LoopCircuitBreaker.decide`)
+
+Pri zložitejších problémoch sa agent môže dostať do stavu „thrashingu“ — opakovane modifikuje súbory s drobnými syntaktickými zmenami, znova spúšťa `harness verify` alebo `harness guard` a naráža na identické zlyhanie. Tým plytvá kontextovým oknom, kreditmi a časom používateľa.
+
+Harness implementuje čistý decider `decideLoopThrashing` (`Effect.fn("LoopCircuitBreaker.decide")` s čistým `R = never`):
+- **Sledovanie chvosta trenia:** Sleduje posuvné okno (sliding window) posledných udalostí v `.harness/friction-log.jsonl`.
+- **Podmienka zopnutia ističa ($\ge 3$ opakovania):** Ak agent trikrát za sebou narazí na rovnakú kategóriu a podpis chyby:
+  - Tri po sebe idúce zlyhania `verify_failure` s rovnakým chybovým výstupom (napr. rovnaká typová chyba alebo zlyhávajúci test),
+  - alebo tri identické eskalácie `guard_escalation` na rovnakom shellovom príkaze.
+- **Dôsledok a eskalácia:**
+  - `harness verify` okamžite preruší vykonávanie s kódom **`exitCode: 2`** a hlásením:
+    ```
+    [ESCALATE: STUCK LOOP DETECTED] Agent encountered 3 consecutive identical verify_failure events.
+    Automated retry halted to prevent thrashing. Escalate to human operator for guidance.
+    ```
+  - `harness session` (pri Claude Code štarte alebo Antigravity `PreInvocation` hooku) nainjektuje varovný stav priamo do promptu:
+    ```json
+    {
+      "injectSteps": [
+        "[Harness Circuit-Breaker] Stuck loop detected: 3 consecutive identical failures. Do not retry variations of the same fix. Escalate directly to the user."
+      ]
+    }
+    ```
+  - Agent je inštruovaný okamžite zastaviť ďalšie autonómne pokusy a požiadať človeka o architektonickú radu.
+
+#### 3. Chránené súborové povrchy v `harness guard` (`E5 §2A` & `E3 §2E` — `classifyFileWrite`)
+
+Súborový hook `PreToolUse` (v Claude Code `Write|Edit` matchery, v Antigravity nástroje `write_to_file`, `replace_file_content`, `multi_replace_file_content`) volá `harness guard` pred každou úpravou disku. Rozhodovací mechanizmus `classifyFileWrite` analyzuje cieľovú cestu súboru (`file_path`, `TargetFile`, `--file=<path>`):
+
+1. **Striktný zákaz zápisu — kategória `deny` (Exit 2 v Claude / `{ decision: "deny" }` v Antigravity):**
+   - `repos/effect/**` a `repos/alchemy/**`: Read-only squashed subtrees. Agent nesmie modifikovať zdrojové kódy Effect ani Alchemy.
+   - `.harness/verify-stamp.json`: Kryptografická pečiatka overenia smie byť vygenerovaná výhradne procesom `harness verify`. Manuálny alebo skriptovaný zápis agentom do tohto súboru je pokusom o falšovanie pečiatky a je okamžite zablokovaný.
+   - `.env*` (okrem `.env.example`): Súbory s reálnymi lokálnymi alebo produkčnými tajomstvami nesmú byť agentom prepisované.
+   - `*.pem`, `*.key`: Súkromné kryptografické kľúče a certifikáty.
+2. **Vyžiadanie potvrdenia človekom — kategória `ask` (Exit 0 s `permissionDecision: "ask"`):**
+   - `.oxlintrc.json`: Globálna konfigurácia lintera. Zabraňuje agentovi odstrániť pravidlá zo zoznamu.
+   - `tools/oxlint/**`: Zdrojové kódy pravidiel `syntax-bans.js` a `test-integrity`.
+   - `libs/harness/graph/policies.cedar`: Cedar autorizačné a architektonické politiky riadiace integritu monorepa.
+
+Tým je garantované, že ani plne autonómny agent nemôže kompromitovať samotné piliere overovacieho a bezpečnostného systému monorepa.
+
 ---
 
 ## 7. Zhrnutie kľúčových pravidiel pre agentov
@@ -893,3 +963,4 @@ Aby sa predišlo vákuovým testom, kde property test síce generuje vstupy, ale
 5. **Nenafukujte `AGENTS.md`:** Opakujúce sa problémy riešte výhradne cez skill `compounding-effect-learnings` a 5 cieľov povýšenia (Graduation Pyramid: `agent-pattern`, `triage-rule`, `guard-allowlist`, `ast-graph-gate`, `adr`).
 6. **Čistota grafu, brány a rozpočty:** Pred `verify` overte absenciu mŕtveho a netestovaného kódu cez `harness gc --strict` (vrátane `missing-decider-property-test`), pri zmenách v `type:domain` dosiahnite 100% mutation score cez `harness mutate --strict`, dodržujte bezpečnostné zákazy v `syntax-bans.js`, rešpektujte `MigrationSafety.decide` a v testoch presadzujte span rozpočty cez `checkSpanBudgets`.
 7. **Živá dokumentácia a spec governance:** Každú novú funkcionalitu začnite formalizáciou EARS požiadaviek v `libs/<scope>/docs/specs/YYYY-MM-DD-<slug>.md` (`status: proposed`, so scoped `id: <scope>:SPEC-NNNN`, s fallbackom na koreňové `docs/specs/` len pri prierezových celo-monorepových zmenách). Po úspešnom `plan-check` doplňte Mermaid graf, po implementácii nastavte `status: accepted` a overte platnosť odkazov cez `stale-doc-reference` v `harness gc --strict`. Netriviálne architektonické kompromisy so zamietnutými alternatívami povinne zaznamenajte do doménového `libs/<scope>/docs/adr/NNNN-<slug>.md` (so scoped `id: <scope>:ADR-NNNN`, alebo `docs/adr/` pre celo-monorepové pravidlá).
+8. **Integrita testov, zamedzenie zacyklenia a rešpektovanie chránených súborov:** Nikdy neobchádzajte testy cez `it.skip`, `it.only`, `it.todo`, `@ts-ignore` ani `oxlint-disable` (pravidlá `harness/test-integrity` a `harness/syntax-bans` ich okamžite zamietnu). Ak `harness verify` skončí s `exitCode: 2` a `[ESCALATE: STUCK LOOP DETECTED]`, okamžite prerušte prácu a eskalujte na používateľa namiesto opakovania podobných pokusov. Nikdy sa nepokúšajte upravovať chránené súbory (`.harness/verify-stamp.json`, `repos/`, `.oxlintrc.json`, `policies.cedar`) — `classifyFileWrite` v `harness guard` takéto operácie odmietne (`deny`) alebo eskaluje na človeka (`ask`).

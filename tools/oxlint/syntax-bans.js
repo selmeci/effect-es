@@ -202,7 +202,59 @@ function isEffectRetryCall(node) {
 }
 
 const effectTsgoDisableMessage =
-  "Suppressing `effecttsgo/*` (@effect/language-service) diagnostics with oxlint-disable is banned — fix the underlying Effect idiom violation instead."
+  "Suppressing `effecttsgo/*` (@effect/language-service) or `harness/*` diagnostics with oxlint-disable/eslint-disable is banned — fix the underlying violation instead."
+const tsSuppressionMessage =
+  "TypeScript suppression directives (@ts-ignore, @ts-expect-error, @ts-nocheck) are banned in production source files — fix the underlying type error instead."
+const testTsIgnoreMessage =
+  "Unconditional TypeScript suppression (@ts-ignore, @ts-nocheck) is banned in tests — fix the types or use @ts-expect-error with an explanation for negative type tests."
+const testSkipOrOnlyMessage =
+  "Skipping or focusing tests (.skip, .only, .todo) is banned by Three-Layer Test Defence (E4 §3) — fix the failing test or implementation instead of bypassing verification."
+
+function isTestRunnerTarget(node) {
+  if (node == null) return false
+  if (
+    node.type === "Identifier" &&
+    (node.name === "it" ||
+      node.name === "test" ||
+      node.name === "describe" ||
+      node.name === "suite" ||
+      node.name === "vitest")
+  ) {
+    return true
+  }
+  if (node.type === "MemberExpression" && node.computed !== true) {
+    return isTestRunnerTarget(node.object)
+  }
+  return false
+}
+
+function isSkippedOrFocusedTestCall(node) {
+  if (node == null || node.type !== "CallExpression") return false
+  const callee = node.callee
+  if (
+    callee != null &&
+    callee.type === "MemberExpression" &&
+    callee.computed !== true &&
+    (isIdentifier(callee.property, "skip") ||
+      isIdentifier(callee.property, "only") ||
+      isIdentifier(callee.property, "todo") ||
+      isIdentifier(callee.property, "skipIf") ||
+      isIdentifier(callee.property, "runIf")) &&
+    isTestRunnerTarget(callee.object)
+  ) {
+    return true
+  }
+  if (
+    isIdentifier(callee, "xit") ||
+    isIdentifier(callee, "xtest") ||
+    isIdentifier(callee, "xdescribe") ||
+    isIdentifier(callee, "fit") ||
+    isIdentifier(callee, "fdescribe")
+  ) {
+    return true
+  }
+  return false
+}
 
 const syntaxBans = {
   create(context) {
@@ -218,8 +270,11 @@ const syntaxBans = {
           context.sourceCode && typeof context.sourceCode.text === "string"
             ? context.sourceCode.text
             : ""
-        if (/oxlint-disable[^\n]*effecttsgo\//.test(text)) {
+        if (/^\s*(\/\/|\/\*)\s*(oxlint-disable|eslint-disable)[^\n]*(effecttsgo\/|harness\/)/m.test(text) || /oxlint-disable[^\n]*effecttsgo\//.test(text)) {
           context.report({ node, message: effectTsgoDisableMessage })
+        }
+        if (/^\s*(\/\/|\/\*)\s*@ts-(ignore|expect-error|nocheck)\b/m.test(text)) {
+          context.report({ node, message: tsSuppressionMessage })
         }
       },
       FunctionDeclaration: reportAsync,
@@ -328,11 +383,36 @@ const syntaxBans = {
   },
 }
 
+const testIntegrity = {
+  create(context) {
+    return {
+      Program(node) {
+        const text =
+          context.sourceCode && typeof context.sourceCode.text === "string"
+            ? context.sourceCode.text
+            : ""
+        if (/^\s*(\/\/|\/\*)\s*(oxlint-disable|eslint-disable)[^\n]*(harness\/test-integrity|effecttsgo\/)/m.test(text)) {
+          context.report({ node, message: effectTsgoDisableMessage })
+        }
+        if (/^\s*(\/\/|\/\*)\s*@ts-(ignore|nocheck)\b/m.test(text)) {
+          context.report({ node, message: testTsIgnoreMessage })
+        }
+      },
+      CallExpression(node) {
+        if (isSkippedOrFocusedTestCall(node)) {
+          context.report({ node, message: testSkipOrOnlyMessage })
+        }
+      },
+    }
+  },
+}
+
 export default {
   meta: {
     name: "harness",
   },
   rules: {
     "syntax-bans": syntaxBans,
+    "test-integrity": testIntegrity,
   },
 }

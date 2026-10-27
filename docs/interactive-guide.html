@@ -946,6 +946,17 @@
                   <button class="preset-btn scenario-pill" data-cmd="alchemy destroy">alchemy destroy (ASKLIST)</button>
                 </div>
               </div>
+              <div>
+                <span style="font-size: 0.78rem; font-weight: 700; color: #a855f7; text-transform: uppercase;">🔒 Chránené zápisové povrchy (classifyFileWrite — E5 §2A &amp; E3 §2E):</span>
+                <div style="display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.35rem;">
+                  <button class="preset-btn scenario-pill" data-cmd="write .harness/verify-stamp.json">write verify-stamp.json (DENY)</button>
+                  <button class="preset-btn scenario-pill" data-cmd="write repos/effect/LLMS.md">write repos/effect/** (DENY)</button>
+                  <button class="preset-btn scenario-pill" data-cmd="write .env.production">write .env.production (DENY)</button>
+                  <button class="preset-btn scenario-pill" data-cmd="write .oxlintrc.json">write .oxlintrc.json (ASK)</button>
+                  <button class="preset-btn scenario-pill" data-cmd="write tools/oxlint/syntax-bans.js">write tools/oxlint/** (ASK)</button>
+                  <button class="preset-btn scenario-pill" data-cmd="write libs/harness/graph/policies.cedar">write policies.cedar (ASK)</button>
+                </div>
+              </div>
             </div>
 
             <!-- Input Box -->
@@ -1598,6 +1609,15 @@ expect(violations).toHaveLength(0);</code></pre>
           <button class="gate-pill scenario-pill" data-gate-scenario="migration-unsafe">
             <span>🛑</span> MigrationSafety: ADD COLUMN NOT NULL
           </button>
+          <button class="gate-pill scenario-pill" data-gate-scenario="test-integrity">
+            <span>🛡️</span> Test Integrity (harness/test-integrity)
+          </button>
+          <button class="gate-pill scenario-pill" data-gate-scenario="circuit-breaker">
+            <span>⚡</span> Stuck-Loop Circuit-Breaker (LoopCircuitBreaker.decide)
+          </button>
+          <button class="gate-pill scenario-pill" data-gate-scenario="write-surface">
+            <span>🔒</span> Controlled Write-Surfaces (classifyFileWrite)
+          </button>
         </div>
 
         <div class="card" style="background: var(--bg-surface); border: 1px solid var(--border-strong); margin-bottom: 0;">
@@ -1624,6 +1644,58 @@ expect(violations).toHaveLength(0);</code></pre>
             <div id="gateScenarioFix" style="font-size: 0.88rem; color: var(--text-primary); line-height: 1.6;">
               Kód je pripravený na nasadenie. Žiadne bezpečnostné riziko ani riziko straty produkčných dát.
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2026 E1–E8 Agentic SDLC Protections Info Card -->
+      <div class="card" style="margin-top: 1.5rem; border-left: 4px solid #a855f7;">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">🛡️ Finálne 2026 E1–E8 Agentic SDLC Ochrany</h2>
+            <p class="card-subtitle">
+              Tri kľúčové deterministické mechanizmy chrániace integritu testov, zamedzujúce uviaznutiu v nekonečných slučkách a zabraňujúce podvrhnutiu verifikačných pečiatok.
+            </p>
+          </div>
+          <span class="badge badge-escalate">E1–E8 SDLC GATES</span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 1rem;">
+          <div style="background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 1rem;">
+            <div style="font-weight: 700; color: var(--text-accent); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+              <span>🛡️</span> 1. Trojvrstvová ochrana testov (E4 §3)
+            </div>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+              Zákaz preskakovania alebo izolovania testov (<code>it.skip</code>, <code>it.only</code>, <code>it.todo</code>, <code>describe.skip</code>, <code>it.effect.skip</code>, <code>it.prop.skip</code>) v <code>test/**/*.ts</code> cez <code>harness/test-integrity</code>.
+            </p>
+            <p style="font-size: 0.85rem; color: var(--text-secondary);">
+              Zákaz potláčania kompilátora a lintera (<code>@ts-ignore</code>, <code>@ts-expect-error</code> v <code>src/</code> a <code>oxlint-disable</code> / <code>eslint-disable</code> pre <code>effecttsgo/*</code> a <code>harness/*</code>).
+            </p>
+          </div>
+
+          <div style="background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 1rem;">
+            <div style="font-weight: 700; color: #f59e0b; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+              <span>⚡</span> 2. Stuck-Loop Circuit-Breaker (E1 §04)
+            </div>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+              Čistý decider <code>decideLoopThrashing</code> (<code>Effect.fn("LoopCircuitBreaker.decide")</code> s <code>R = never</code>) sleduje chvost <code>.harness/friction-log.jsonl</code>.
+            </p>
+            <p style="font-size: 0.85rem; color: var(--text-secondary);">
+              Ak agent &ge; 3-krát za sebou narazí na rovnaké zlyhanie (<code>verify_failure</code> alebo <code>guard_escalation</code>), <code>harness verify</code> vráti <strong>exitCode: 2</strong> s <code>[ESCALATE: STUCK LOOP DETECTED]</code> a <code>harness session</code> injektuje varovanie do kontextu.
+            </p>
+          </div>
+
+          <div style="background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 1rem;">
+            <div style="font-weight: 700; color: #ef4444; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+              <span>🔒</span> 3. Chránené povrchy zápisu (E5 §2A &amp; E3 §2E)
+            </div>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+              Kontrola cieľových ciest pri zápise v <code>harness guard</code> (<code>classifyFileWrite</code>):
+            </p>
+            <ul style="font-size: 0.85rem; color: var(--text-secondary); padding-left: 1.25rem;">
+              <li><strong>DENY:</strong> <code>repos/effect/**</code>, <code>repos/alchemy/**</code>, <code>.harness/verify-stamp.json</code> (ochrana pred falšovaním), <code>.env*</code>, <code>*.pem</code>, <code>*.key</code>.</li>
+              <li><strong>ASK:</strong> <code>.oxlintrc.json</code>, <code>tools/oxlint/**</code>, <code>libs/harness/graph/policies.cedar</code> (ochrana pred oslabením brán).</li>
+            </ul>
           </div>
         </div>
       </div>
@@ -2350,11 +2422,52 @@ expect(violations).toHaveLength(0);</code></pre>
       let classReason = "Neznámy príkaz -> eskalácia na clef-flash";
 
       const lowerCmd = cmd.toLowerCase();
-      for (const item of DENYLIST) {
-        if (lowerCmd.includes(item.token)) {
+
+      // classifyFileWrite (E5 §2A & E3 §2E: Chránené zápisové povrchy)
+      const isFileWrite = lowerCmd.startsWith("write ") || lowerCmd.startsWith("edit ") || lowerCmd.includes("file_path=") || lowerCmd.includes("targetfile=");
+      const targetPath = isFileWrite
+        ? lowerCmd.replace(/^(write|edit)\s+/, "").replace(/^.*(file_path|targetfile)=/, "").trim()
+        : lowerCmd;
+
+      const FILE_WRITE_DENY = [
+        { pattern: ".harness/verify-stamp.json", reason: "verify-stamp.json je chránený kryptografický artefakt generovaný výhradne cez harness verify" },
+        { pattern: "repos/effect", reason: "repos/effect/** je read-only squashed subtree" },
+        { pattern: "repos/alchemy", reason: "repos/alchemy/** je read-only squashed subtree" },
+        { pattern: ".env", notPattern: ".env.example", reason: "Súbory environmentálnych tajomstiev (.env*) nesmú byť prepisované" },
+        { pattern: ".pem", reason: "Kryptografické súkromné kľúče a certifikáty (*.pem) nesmú byť prepisované" },
+        { pattern: ".key", reason: "Kryptografické súkromné kľúče (*.key) nesmú byť prepisované" }
+      ];
+      const FILE_WRITE_ASK = [
+        { pattern: ".oxlintrc.json", reason: "Modifikácia pravidiel lintera (.oxlintrc.json) vyžaduje schválenie človekom" },
+        { pattern: "tools/oxlint", reason: "Modifikácia implementácie brán (tools/oxlint/**) vyžaduje schválenie človekom" },
+        { pattern: "policies.cedar", reason: "Modifikácia bezpečnostných a architektonických politík (policies.cedar) vyžaduje schválenie človekom" }
+      ];
+
+      for (const item of FILE_WRITE_DENY) {
+        if (targetPath.includes(item.pattern) && (!item.notPattern || !targetPath.includes(item.notPattern))) {
           classification = "deny";
-          classReason = `DENYLIST token: "${item.token}" (${item.reason})`;
+          classReason = `classifyFileWrite DENY: ${item.reason}`;
           break;
+        }
+      }
+
+      if (classification === "escalate") {
+        for (const item of FILE_WRITE_ASK) {
+          if (targetPath.includes(item.pattern)) {
+            classification = "ask";
+            classReason = `classifyFileWrite ASK: ${item.reason}`;
+            break;
+          }
+        }
+      }
+
+      if (classification === "escalate") {
+        for (const item of DENYLIST) {
+          if (lowerCmd.includes(item.token)) {
+            classification = "deny";
+            classReason = `DENYLIST token: "${item.token}" (${item.reason})`;
+            break;
+          }
         }
       }
 
@@ -2888,6 +3001,36 @@ expect(violations).toHaveLength(0);</code></pre>
         exit: "exitCode: 2 (ESCALATE)",
         output: "ESCALATE: Migration contains 'ALTER TABLE photos ADD COLUMN author_id text NOT NULL;' without DEFAULT clause.\nSQLite will fail to apply this on tables with existing rows.",
         fix: "Pridajte explicitnú klauzulu DEFAULT (napr. DEFAULT '') alebo vytvorte stĺpec ako nullable a naplňte ho backfillom, inak migrácia v produkcii zhavaruje."
+      },
+      "test-integrity": {
+        title: "Subverzia testov: Zákaz it.skip, it.only, @ts-ignore a oxlint-disable (E4 §3)",
+        badgeClass: "badge badge-block",
+        badgeText: "TEST INTEGRITY (BANNED)",
+        desc: "Agent sa pokúsil obísť zlyhávajúci test pomocou it.skip() alebo potlačiť typovú chybu cez @ts-ignore v test/**/*.ts.",
+        tool: "oxlint harness/test-integrity & harness/syntax-bans",
+        exit: "exitCode: 1",
+        output: "Error: Skipping or focusing tests (.skip, .only, .todo) is banned by Three-Layer Test Defence (E4 §3) at libs/sample/domain/test/quota.test.ts:42.\nError: Unconditional TypeScript suppression (@ts-ignore, @ts-nocheck) is banned in tests at libs/sample/domain/test/quota.test.ts:18.\nError: Suppressing harness/test-integrity diagnostics with oxlint-disable is banned.",
+        fix: "Odstráňte it.skip / it.only / @ts-ignore. Testy musia reálne overovať správanie a prejsť. Ak ide o negatívny typový test, použite @ts-expect-error s vysvetlením."
+      },
+      "circuit-breaker": {
+        title: "Stuck-Loop Circuit-Breaker: Detekcia zacyklenia agenta (E1 §04 Loop)",
+        badgeClass: "badge badge-escalate",
+        badgeText: "ESCALATE: STUCK LOOP",
+        desc: "Agent zaznamenal 3-krát po sebe identické zlyhanie (verify_failure alebo guard_escalation). Čistý decider LoopCircuitBreaker.decide rozpojil istič.",
+        tool: "LoopCircuitBreaker.decide (harness verify)",
+        exit: "exitCode: 2 (ESCALATE)",
+        output: "[ESCALATE: STUCK LOOP DETECTED] Agent encountered 3 consecutive identical verify_failure events:\n- 14:21:05 verify_failure (libs/sample/domain: Type check failed on decideAlbumQuota)\n- 14:22:18 verify_failure (libs/sample/domain: Type check failed on decideAlbumQuota)\n- 14:23:40 verify_failure (libs/sample/domain: Type check failed on decideAlbumQuota)\nThrashing circuit-breaker tripped! Automated retry halted to prevent token waste.",
+        fix: "Agent nesmie pokračovať v pokusoch o drobné opravy. harness session injektuje varovanie do kontextu a agent musí okamžite eskalovať problém na používateľa."
+      },
+      "write-surface": {
+        title: "Chránené súborové povrchy: Zákaz zápisu do .harness/verify-stamp.json / repos/ (E5 §2A & E3 §2E)",
+        badgeClass: "badge badge-deny",
+        badgeText: "WRITE SURFACE (DENY)",
+        desc: "Agent sa pokúsil zapísať do chráneného súboru .harness/verify-stamp.json alebo repos/effect/** cez súborový tool.",
+        tool: "classifyFileWrite (harness guard PreToolUse)",
+        exit: "exitCode: 2 (DENY)",
+        output: "Blocked by harness guard (classifyFileWrite):\nTarget: .harness/verify-stamp.json\nReason: verify-stamp.json je chránený kryptografický artefakt generovaný výhradne cez harness verify. Manuálny alebo priamy zápis je zablokovaný.",
+        fix: "Agent nesmie priamo vytvárať ani upravovať overovaciu pečiatku, read-only subtrees ani produkčné .env súbory. Pečiatku vytvorí jedine úspešný beh harness verify."
       }
     };
 

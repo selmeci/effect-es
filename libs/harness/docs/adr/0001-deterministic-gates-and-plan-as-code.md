@@ -6,11 +6,13 @@ date: 2026-10-25
 enforced_by:
   - libs/harness/gates/src/stub.ts
   - libs/harness/graph/src/policy-check.ts
-  - tools/oxlint/syntax-bans.js
+  - libs/harness/gates/src/policy.ts
 spans:
   - GraphGc.decide
   - SpanBudget.decide
   - MigrationSafety.decide
+  - MutationCheck.decide
+  - LoopCircuitBreaker.decide
 ---
 
 # harness:ADR-0001: Deterministic Gates and Compilable Plan-as-Code Skeletons Over Prose Plans

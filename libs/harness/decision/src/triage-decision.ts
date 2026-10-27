@@ -122,6 +122,27 @@ const DETERMINISTIC_TRIAGE_RULES: ReadonlyArray<{
       kind: "mechanical",
       hint: "Swallowing typed errors with Effect.ignore is banned in type:domain — surface failures in the E channel or handle them explicitly."
     }
+  },
+  {
+    pattern: "Skipping or focusing tests",
+    result: {
+      kind: "mechanical",
+      hint: "Skipping or focusing tests (.skip, .only, .todo) is banned by Three-Layer Test Defence (E4 §3) — fix the failing test or implementation instead of bypassing verification."
+    }
+  },
+  {
+    pattern: "TypeScript suppression",
+    result: {
+      kind: "mechanical",
+      hint: "TypeScript suppression directives (@ts-ignore, @ts-expect-error, @ts-nocheck) are banned — fix the underlying type error instead of silencing the compiler."
+    }
+  },
+  {
+    pattern: "Suppressing `effecttsgo/*`",
+    result: {
+      kind: "mechanical",
+      hint: "Suppressing effecttsgo/* or harness/* diagnostics with oxlint-disable/eslint-disable is banned — fix the underlying violation instead."
+    }
   }
 ]
 

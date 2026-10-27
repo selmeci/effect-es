@@ -2,13 +2,16 @@ import { describe, expect, it } from "@effect/vitest"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { buildHarnessGraph, loadGraphSnapshot } from "@harness/graph"
 import {
   buildSessionHandoff,
+  checkLoopThrashing,
   checkMigrationSqlSafety,
   checkSpanBudgets,
+  classifyFileWrite,
   decideGraphEntropy,
+  decideLoopThrashing,
   decideMigrationSafety,
   decideMutationReport,
   decideSessionHandoff,
@@ -22,6 +25,7 @@ import {
   scanGraphEntropy,
   type CodeMutant,
   type FrictionCluster,
+  type FrictionEvent,
   type GovernanceDocReference,
   type SpanSample
 } from "../src/index.js"
@@ -828,6 +832,205 @@ status: accepted
         )
       })
     )
+
+    it.effect("surfaces stuck loop escalation and marks hasActiveTask when loop is thrashing", () =>
+      Effect.gen(function* () {
+        const thrashing = yield* decideLoopThrashing([
+          {
+            kind: "verify_failure",
+            timestamp: "2026-10-27T10:00:00.000Z",
+            summary: "tsc error",
+            detail: "error detail 1"
+          },
+          {
+            kind: "verify_failure",
+            timestamp: "2026-10-27T10:01:00.000Z",
+            summary: "tsc error",
+            detail: "error detail 2"
+          },
+          {
+            kind: "verify_failure",
+            timestamp: "2026-10-27T10:02:00.000Z",
+            summary: "tsc error",
+            detail: "error detail 3"
+          }
+        ])
+
+        const summary = yield* decideSessionHandoff({
+          stampValid: true,
+          activeStubs: [],
+          missingPlannedFns: [],
+          frictionClusters: [],
+          loopThrashing: thrashing
+        })
+
+        expect(summary.hasActiveTask).toBe(true)
+        expect(summary.stuckLoopEscalation).not.toBeNull()
+        expect(summary.stuckLoopEscalation).toContain("[ESCALATE: STUCK LOOP DETECTED]")
+        expect(summary.handoffMessage).toContain("[ESCALATE: STUCK LOOP DETECTED]")
+      })
+    )
+  })
+
+  describe("decideLoopThrashing / checkLoopThrashing (LoopCircuitBreaker.decide)", () => {
+    it.effect("detects stuck loops when consecutive identical failure events meet threshold", () =>
+      Effect.gen(function* () {
+        const events: ReadonlyArray<FrictionEvent> = [
+          {
+            kind: "verify_failure",
+            timestamp: "2026-10-27T10:00:00.000Z",
+            summary: "type error in domain",
+            detail: "d1"
+          },
+          {
+            kind: "verify_failure",
+            timestamp: "2026-10-27T10:01:00.000Z",
+            summary: "type error in domain",
+            detail: "d2"
+          },
+          {
+            kind: "route_miss",
+            timestamp: "2026-10-27T10:01:30.000Z",
+            summary: "missed route",
+            detail: "d3"
+          },
+          {
+            kind: "verify_failure",
+            timestamp: "2026-10-27T10:02:00.000Z",
+            summary: " type error in domain ",
+            detail: "d4"
+          }
+        ]
+
+        const status = yield* decideLoopThrashing(events, 3)
+        expect(status.stuck).toBe(true)
+        expect(status.consecutiveCount).toBe(3)
+        expect(status.threshold).toBe(3)
+        expect(status.repeatedKey).toBe("verify_failure::type error in domain")
+        expect(status.summary).toBe(" type error in domain ")
+        expect(status.escalationMessage).toContain("[ESCALATE: STUCK LOOP DETECTED]")
+        expect(status.escalationMessage).toContain("3 times consecutively")
+
+        const syncStatus = checkLoopThrashing(events, 3)
+        expect(syncStatus).toEqual(status)
+      })
+    )
+
+    it("resets consecutive streak when failure summary changes and handles empty events", () => {
+      const emptyStatus = checkLoopThrashing([])
+      expect(emptyStatus.stuck).toBe(false)
+      expect(emptyStatus.consecutiveCount).toBe(0)
+      expect(emptyStatus.repeatedKey).toBeNull()
+      expect(emptyStatus.summary).toBeNull()
+      expect(emptyStatus.escalationMessage).toBeNull()
+
+      const events: ReadonlyArray<FrictionEvent> = [
+        {
+          kind: "verify_failure",
+          timestamp: "2026-10-27T10:00:00.000Z",
+          summary: "syntax ban",
+          detail: "d1"
+        },
+        {
+          kind: "verify_failure",
+          timestamp: "2026-10-27T10:01:00.000Z",
+          summary: "syntax ban",
+          detail: "d2"
+        },
+        {
+          kind: "guard_escalation",
+          timestamp: "2026-10-27T10:02:00.000Z",
+          summary: "alchemy dev",
+          detail: "d3"
+        }
+      ]
+
+      const status = checkLoopThrashing(events, 3)
+      expect(status.stuck).toBe(false)
+      expect(status.consecutiveCount).toBe(1)
+      expect(status.repeatedKey).toBe("guard_escalation::alchemy dev")
+    })
+
+    it.effect.prop(
+      "LoopCircuitBreaker.decide: stuck is true if and only if consecutive failure count meets or exceeds threshold",
+      {
+        repeatCount: Schema.Int.check(
+          Schema.isBetween({ minimum: 0, maximum: 6 })
+        ),
+        threshold: Schema.Int.check(
+          Schema.isBetween({ minimum: 2, maximum: 5 })
+        )
+      },
+      ({ repeatCount, threshold }) =>
+        Effect.gen(function* () {
+          const events: Array<FrictionEvent> = Array.from(
+            { length: repeatCount },
+            (_, i) => ({
+              kind: "verify_failure" as const,
+              timestamp: new Date(1000 + i * 1000).toISOString(),
+              summary: "tsc error",
+              detail: "error detail"
+            })
+          )
+          const status = yield* decideLoopThrashing(events, threshold)
+          const effectiveThreshold = Math.max(2, threshold)
+          const expectedStuck = repeatCount >= effectiveThreshold
+          expect(status.stuck).toBe(expectedStuck)
+          expect(status.consecutiveCount).toBe(repeatCount)
+          expect(status.threshold).toBe(effectiveThreshold)
+          if (expectedStuck) {
+            expect(status.escalationMessage).toContain("[ESCALATE: STUCK LOOP DETECTED]")
+            expect(status.escalationMessage).toContain("verify_failure")
+          } else {
+            expect(status.escalationMessage).toBeNull()
+          }
+        })
+    )
+  })
+
+  describe("classifyFileWrite (controlled write-surface)", () => {
+    it("denies writes to protected read-only repos subtrees", () => {
+      expect(classifyFileWrite("repos/effect/LLMS.md").verdict).toBe("deny")
+      expect(classifyFileWrite("repos/alchemy/package.json").verdict).toBe("deny")
+      expect(classifyFileWrite("repos/effect/src/index.ts").verdict).toBe("deny")
+      expect(classifyFileWrite("repos/effect").verdict).toBe("deny")
+    })
+
+    it("denies direct modification of verify-stamp.json (forgery protection)", () => {
+      expect(classifyFileWrite(".harness/verify-stamp.json").verdict).toBe("deny")
+      expect(
+        classifyFileWrite(".harness/worktrees/wt-1/verify-stamp.json").verdict
+      ).toBe("deny")
+      expect(
+        classifyFileWrite("/home/user/project/.harness/verify-stamp.json").verdict
+      ).toBe("deny")
+    })
+
+    it("denies modification of secret and credential files", () => {
+      expect(classifyFileWrite(".env").verdict).toBe("deny")
+      expect(classifyFileWrite(".env.local").verdict).toBe("deny")
+      expect(classifyFileWrite(".dev.vars").verdict).toBe("deny")
+      expect(classifyFileWrite("secret.pem").verdict).toBe("deny")
+      expect(classifyFileWrite("server.key").verdict).toBe("deny")
+    })
+
+    it("allows template/example/sample environment files", () => {
+      expect(classifyFileWrite(".env.example").verdict).toBe("allow")
+      expect(classifyFileWrite(".env.template").verdict).toBe("allow")
+      expect(classifyFileWrite(".env.sample").verdict).toBe("allow")
+    })
+
+    it("asks human confirmation for governance and linter policy changes", () => {
+      expect(classifyFileWrite(".oxlintrc.json").verdict).toBe("ask")
+      expect(classifyFileWrite("tools/oxlint/syntax-bans.js").verdict).toBe("ask")
+      expect(classifyFileWrite("libs/harness/graph/policies.cedar").verdict).toBe("ask")
+    })
+
+    it("allows standard codebase modifications and handles empty input", () => {
+      expect(classifyFileWrite("libs/sample/domain/src/index.ts").verdict).toBe("allow")
+      expect(classifyFileWrite("apps/sample-web/src/client.ts").verdict).toBe("allow")
+      expect(classifyFileWrite("").verdict).toBe("allow")
+    })
   })
 
   describe("decideSpanBudgets / checkSpanBudgets", () => {

@@ -86,6 +86,68 @@ export const summarizeFrictionEvents = (
   events: ReadonlyArray<FrictionEvent>
 ): ReadonlyArray<FrictionCluster> => Effect.runSync(decideFrictionClusters(events))
 
+export interface LoopThrashingStatus {
+  readonly stuck: boolean
+  readonly consecutiveCount: number
+  readonly threshold: number
+  readonly repeatedKey: string | null
+  readonly summary: string | null
+  readonly escalationMessage: string | null
+}
+
+export const decideLoopThrashing = Effect.fn("LoopCircuitBreaker.decide")(function* (
+  events: ReadonlyArray<FrictionEvent>,
+  threshold: number = 3
+) {
+  yield* Effect.void
+  const failures = events.filter(
+    (event) => event.kind === "verify_failure" || event.kind === "guard_escalation"
+  )
+  const effectiveThreshold = Math.max(2, threshold)
+  if (failures.length === 0) {
+    return {
+      stuck: false,
+      consecutiveCount: 0,
+      threshold: effectiveThreshold,
+      repeatedKey: null,
+      summary: null,
+      escalationMessage: null
+    } satisfies LoopThrashingStatus
+  }
+
+  const last = failures[failures.length - 1]!
+  const lastKey = `${last.kind}::${last.summary.trim().toLowerCase()}`
+  let consecutiveCount = 0
+  for (let i = failures.length - 1; i >= 0; i--) {
+    const ev = failures[i]!
+    const key = `${ev.kind}::${ev.summary.trim().toLowerCase()}`
+    if (key === lastKey) {
+      consecutiveCount += 1
+    } else {
+      break
+    }
+  }
+
+  const stuck = consecutiveCount >= effectiveThreshold
+  const escalationMessage = stuck
+    ? `[ESCALATE: STUCK LOOP DETECTED] Repeated ${last.kind} (${last.summary}) ${consecutiveCount} times consecutively (threshold: ${effectiveThreshold}). Stop retrying variations of the same fix and escalate to the human.`
+    : null
+
+  return {
+    stuck,
+    consecutiveCount,
+    threshold: effectiveThreshold,
+    repeatedKey: lastKey,
+    summary: last.summary,
+    escalationMessage
+  } satisfies LoopThrashingStatus
+})
+
+export const checkLoopThrashing = (
+  events: ReadonlyArray<FrictionEvent>,
+  threshold: number = 3
+): LoopThrashingStatus => Effect.runSync(decideLoopThrashing(events, threshold))
+
 const decodeFrictionEvent = Schema.decodeOption(Schema.fromJsonString(FrictionEvent))
 
 export const appendFrictionEvent = (

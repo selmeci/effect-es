@@ -43,6 +43,24 @@ describe("Harness decision definitions & fallbacks", () => {
       )
       expect(res.kind).toBe("mechanical")
       expect(res.hint).toContain("yield*")
+
+      const skipRes = yield* triageFailure("Skipping or focusing tests is banned").pipe(
+        Effect.provide(makeFailingDecisionModelLayer())
+      )
+      expect(skipRes.kind).toBe("mechanical")
+      expect(skipRes.hint).toContain("Three-Layer Test Defence")
+
+      const tsSuppRes = yield* triageFailure("TypeScript suppression directives are banned").pipe(
+        Effect.provide(makeFailingDecisionModelLayer())
+      )
+      expect(tsSuppRes.kind).toBe("mechanical")
+      expect(tsSuppRes.hint).toContain("@ts-ignore")
+
+      const oxSuppRes = yield* triageFailure("Suppressing `effecttsgo/*` with oxlint-disable is banned").pipe(
+        Effect.provide(makeFailingDecisionModelLayer())
+      )
+      expect(oxSuppRes.kind).toBe("mechanical")
+      expect(oxSuppRes.hint).toContain("effecttsgo/*")
     })
   )
 

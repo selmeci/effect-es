@@ -42,3 +42,52 @@ export const classifyCommand = (command: string): GuardVerdict => {
   const allowed = ALLOWLIST.some((prefix) => command.startsWith(prefix))
   return allowed ? "allow" : "escalate"
 }
+
+export interface FileWriteGuardResult {
+  readonly verdict: "allow" | "deny" | "ask"
+  readonly reason?: string | undefined
+}
+
+export const classifyFileWrite = (filePath: string): FileWriteGuardResult => {
+  const norm = filePath.replace(/\\/g, "/").trim()
+  if (norm === "") {
+    return { verdict: "allow" }
+  }
+
+  if (/(^|\/)repos\/(effect|alchemy)(\/|$)/.test(norm)) {
+    return {
+      verdict: "deny",
+      reason: `Protected read-only subtree cannot be modified: ${filePath}`
+    }
+  }
+
+  if (/(^|\/)\.harness\/(worktrees\/[^/]+\/)?verify-stamp\.json$/.test(norm)) {
+    return {
+      verdict: "deny",
+      reason: `Direct modification of verify-stamp.json is forbidden (stamp forgery protection): ${filePath}`
+    }
+  }
+
+  if (
+    /(^|\/)(\.env(\.[a-zA-Z0-9_-]+)?|\.dev\.vars|.*\.(pem|key))$/.test(norm) &&
+    !/\.(example|template|sample)$/i.test(norm)
+  ) {
+    return {
+      verdict: "deny",
+      reason: `Secret or credential file modification is forbidden by harness guard: ${filePath}`
+    }
+  }
+
+  if (
+    /(^|\/)(\.oxlintrc\.json|tools\/oxlint\/.*|libs\/harness\/graph\/policies\.cedar)$/.test(
+      norm
+    )
+  ) {
+    return {
+      verdict: "ask",
+      reason: `Modifying harness governance/linter policy requires human confirmation: ${filePath}`
+    }
+  }
+
+  return { verdict: "allow" }
+}

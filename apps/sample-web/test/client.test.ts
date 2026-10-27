@@ -194,4 +194,48 @@ describe("SampleApiClient and AtomHttpApi", () => {
       }
     }
   })
+
+  it("enforces test-integrity and TypeScript suppression bans via oxlint", () => {
+    const testCases = [
+      {
+        file: path.resolve(repoRoot, "apps/sample-web/test/temp-skip-test.ts"),
+        code: 'it.skip("skipped test", () => {})\n',
+        match: /Skipping or focusing tests/
+      },
+      {
+        file: path.resolve(repoRoot, "apps/sample-web/test/temp-ts-ignore-test.ts"),
+        code: "// @ts-ignore\nexport const x = 1\n",
+        match: /TypeScript suppression/
+      },
+      {
+        file: path.resolve(repoRoot, "apps/sample-web/src/temp-ts-expect-error-test.ts"),
+        code: "// @ts-expect-error\nexport const y = 2\n",
+        match: /TypeScript suppression directives/
+      }
+    ]
+
+    for (const { file, code, match } of testCases) {
+      try {
+        fs.writeFileSync(file, code)
+        let failed = false
+        let output = ""
+        try {
+          output = execSync(`pnpm exec oxlint ${file}`, {
+            cwd: repoRoot,
+            stdio: "pipe",
+            encoding: "utf-8"
+          })
+        } catch (err: any) {
+          failed = true
+          output = (err.stdout ?? "") + (err.stderr ?? "")
+        }
+        expect(failed).toBe(true)
+        expect(output).toMatch(match)
+      } finally {
+        if (fs.existsSync(file)) {
+          fs.unlinkSync(file)
+        }
+      }
+    }
+  })
 })

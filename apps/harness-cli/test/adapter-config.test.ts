@@ -245,6 +245,93 @@ describe("Antigravity adapter & plugin configuration", () => {
     })
   })
 
+  it("enforces controlled write-surface guard for file write operations in Antigravity", () => {
+    const runGuardForFile = (targetFile: string) => {
+      const stdout = execFileSync(
+        process.execPath,
+        [
+          "--import",
+          "../../../../tools/node-ts-resolver.mjs",
+          "../../../../apps/harness-cli/src/index.ts",
+          "guard",
+          "--format=antigravity"
+        ],
+        {
+          cwd: pluginDir,
+          input: JSON.stringify({
+            toolCall: {
+              name: "write_to_file",
+              args: { TargetFile: targetFile }
+            }
+          }),
+          encoding: "utf8"
+        }
+      )
+      return JSON.parse(stdout.trim())
+    }
+
+    const stampRes = runGuardForFile(".harness/verify-stamp.json")
+    expect(stampRes.decision).toBe("deny")
+    expect(stampRes.reason).toContain("Direct modification of verify-stamp.json is forbidden")
+
+    const reposRes = runGuardForFile("repos/effect/index.ts")
+    expect(reposRes.decision).toBe("deny")
+    expect(reposRes.reason).toContain("Protected read-only subtree cannot be modified")
+
+    const oxlintRes = runGuardForFile(".oxlintrc.json")
+    expect(oxlintRes.decision).toBe("ask")
+    expect(oxlintRes.reason).toContain(
+      "Modifying harness governance/linter policy requires human confirmation"
+    )
+
+    const allowRes = runGuardForFile("libs/sample/domain/src/index.ts")
+    expect(allowRes.decision).toBe("allow")
+  })
+
+  it("enforces controlled write-surface guard for file write operations in Claude Code format", () => {
+    let denied = false
+    let errOutput = ""
+    try {
+      execFileSync(
+        process.execPath,
+        ["--import", "./tools/node-ts-resolver.mjs", "apps/harness-cli/src/index.ts", "guard"],
+        {
+          cwd: repoRoot,
+          input: JSON.stringify({ tool_input: { file_path: ".harness/verify-stamp.json" } }),
+          encoding: "utf8"
+        }
+      )
+    } catch (err: any) {
+      denied = true
+      errOutput = (err.stderr ?? "") + (err.stdout ?? "")
+    }
+    expect(denied).toBe(true)
+    expect(errOutput).toContain("Direct modification of verify-stamp.json is forbidden")
+
+    const askStdout = execFileSync(
+      process.execPath,
+      ["--import", "./tools/node-ts-resolver.mjs", "apps/harness-cli/src/index.ts", "guard"],
+      {
+        cwd: repoRoot,
+        input: JSON.stringify({ tool_input: { file_path: ".oxlintrc.json" } }),
+        encoding: "utf8"
+      }
+    )
+    const askResult = JSON.parse(askStdout.trim())
+    expect(askResult.hookSpecificOutput?.permissionDecision).toBe("ask")
+
+    const allowStdout = execFileSync(
+      process.execPath,
+      ["--import", "./tools/node-ts-resolver.mjs", "apps/harness-cli/src/index.ts", "guard"],
+      {
+        cwd: repoRoot,
+        input: JSON.stringify({ tool_input: { file_path: "libs/sample/domain/src/index.ts" } }),
+        encoding: "utf8"
+      }
+    )
+    expect(allowStdout.trim()).toBe("")
+  })
+
   it("ships specifying-ears-with-effect, planning-effect-skeletons, and executing-effect-stubs in both adapters", () => {
     const workflowSkills = [
       "specifying-ears-with-effect",

@@ -17,6 +17,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "replace_file_content|multi_replace_file_content|write_to_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --import ../../../../tools/node-ts-resolver.mjs ../../../../apps/harness-cli/src/index.ts guard --format=antigravity",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [

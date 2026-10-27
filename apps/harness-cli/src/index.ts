@@ -18,8 +18,10 @@ import {
 import {
   appendFrictionEvent,
   buildSessionHandoff,
+  checkLoopThrashing,
   checkVerifyStamp,
   classifyCommand,
+  classifyFileWrite,
   clearFrictionEvents,
   diffPlanAndImplGraphs,
   type FrictionEventKind,
@@ -83,9 +85,12 @@ export interface CliResult {
 }
 
 const PreToolUseStdinSchema = Schema.Struct({
+  tool_name: Schema.optional(Schema.String),
   tool_input: Schema.optional(
     Schema.Struct({
-      command: Schema.optional(Schema.String)
+      command: Schema.optional(Schema.String),
+      file_path: Schema.optional(Schema.String),
+      path: Schema.optional(Schema.String)
     })
   ),
   toolCall: Schema.optional(
@@ -94,7 +99,10 @@ const PreToolUseStdinSchema = Schema.Struct({
       args: Schema.optional(
         Schema.Struct({
           CommandLine: Schema.optional(Schema.String),
-          command: Schema.optional(Schema.String)
+          command: Schema.optional(Schema.String),
+          TargetFile: Schema.optional(Schema.String),
+          AbsolutePath: Schema.optional(Schema.String),
+          file_path: Schema.optional(Schema.String)
         })
       )
     })
@@ -149,10 +157,14 @@ const handleGuard = (
 ): Effect.Effect<CliResult> =>
   Effect.gen(function* () {
     const isAntigravityFlag = argv.includes("--format=antigravity")
-    const positionalArgs = argv.slice(1).filter((arg) => arg !== "--format=antigravity")
+    const fileFlag = argv.find((arg) => arg.startsWith("--file="))
+    const cliFilePath = fileFlag ? fileFlag.slice("--file=".length) : undefined
+    const positionalArgs = argv
+      .slice(1)
+      .filter((arg) => arg !== "--format=antigravity" && !arg.startsWith("--file="))
 
     let rawStdin = options?.stdin
-    if (positionalArgs.length === 0 && rawStdin === undefined && !process.stdin.isTTY) {
+    if (positionalArgs.length === 0 && !cliFilePath && rawStdin === undefined && !process.stdin.isTTY) {
       rawStdin = yield* Effect.try({
         try: () => readFileSync(0, "utf8"),
         catch: () => ""
@@ -160,6 +172,7 @@ const handleGuard = (
     }
 
     let stdinCmd: string | undefined
+    let stdinFilePath: string | undefined
     let isAntigravityStdin = false
     if (rawStdin) {
       const decoded = decodePreToolUseStdin(rawStdin)
@@ -169,13 +182,71 @@ const handleGuard = (
           stdinCmd =
             decoded.value.toolCall.args?.CommandLine ??
             decoded.value.toolCall.args?.command
+          stdinFilePath =
+            decoded.value.toolCall.args?.TargetFile ??
+            decoded.value.toolCall.args?.AbsolutePath ??
+            decoded.value.toolCall.args?.file_path
         } else {
           stdinCmd = decoded.value.tool_input?.command
+          stdinFilePath =
+            decoded.value.tool_input?.file_path ??
+            decoded.value.tool_input?.path
         }
       }
     }
     const isAntigravity = isAntigravityFlag || isAntigravityStdin
+    const filePath = cliFilePath ?? stdinFilePath
     const command = positionalArgs.length > 0 ? positionalArgs.join(" ") : stdinCmd ?? ""
+
+    if (filePath && command.trim() === "") {
+      const fileGuard = classifyFileWrite(filePath)
+      if (fileGuard.verdict === "deny") {
+        if (isAntigravity) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              decision: "deny",
+              reason: fileGuard.reason
+            }),
+            stderr: ""
+          }
+        }
+        return {
+          exitCode: 2,
+          stdout: "",
+          stderr: fileGuard.reason ?? `Blocked file write: ${filePath}`
+        }
+      }
+      if (fileGuard.verdict === "ask") {
+        if (isAntigravity) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              decision: "ask",
+              reason: fileGuard.reason
+            }),
+            stderr: ""
+          }
+        }
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "ask",
+              permissionDecisionReason: fileGuard.reason
+            }
+          }),
+          stderr: ""
+        }
+      }
+      return {
+        exitCode: 0,
+        stdout: isAntigravity ? JSON.stringify({ decision: "allow" }) : "",
+        stderr: ""
+      }
+    }
+
     if (command.trim() === "") {
       return {
         exitCode: 0,
@@ -474,6 +545,14 @@ const handleVerify = (
         summary: checkResult.violations[0]?.rule ?? "graph-violation",
         detail: msg
       })
+      const thrashing = checkLoopThrashing(readFrictionEvents(repoRoot))
+      if (thrashing.stuck && thrashing.escalationMessage !== null) {
+        return {
+          exitCode: 2,
+          stdout: "",
+          stderr: `${thrashing.escalationMessage}\n${msg}`
+        }
+      }
       return {
         exitCode: 1,
         stdout: "",
@@ -505,6 +584,14 @@ const handleVerify = (
           summary: `verify:${triage.kind}`,
           detail: formattedErr
         })
+        const thrashing = checkLoopThrashing(readFrictionEvents(repoRoot))
+        if (thrashing.stuck && thrashing.escalationMessage !== null) {
+          return {
+            exitCode: 2,
+            stdout: "",
+            stderr: `${thrashing.escalationMessage}\n${formattedErr}`
+          }
+        }
         return {
           exitCode: 1,
           stdout: "",
@@ -695,14 +782,17 @@ const handleDoctorOrSession = (
       existsSync(planPath) || existsSync(join(harnessDir, "verify-stamp.json"))
     const effectiveStampValid = hasPlanOrStamp ? stampCheck.valid : true
     const stampReason = !stampCheck.valid ? stampCheck.reason : undefined
-    const frictionClusters = summarizeFrictionEvents(readFrictionEvents(repoRoot))
+    const events = readFrictionEvents(repoRoot)
+    const frictionClusters = summarizeFrictionEvents(events)
+    const loopThrashing = checkLoopThrashing(events)
 
     const handoff = buildSessionHandoff({
       stampValid: effectiveStampValid,
       stampReason,
       activeStubs,
       missingPlannedFns,
-      frictionClusters
+      frictionClusters,
+      loopThrashing
     })
 
     const ok = nodeOk && snapshotDirOk

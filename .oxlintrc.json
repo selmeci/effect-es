@@ -56,6 +56,12 @@
       }
     },
     {
+      "files": ["libs/**/test/**/*.ts", "apps/**/test/**/*.ts"],
+      "rules": {
+        "harness/test-integrity": "error"
+      }
+    },
+    {
       "files": ["**/infra/src/**/*.ts", "**/infra/test/**/*.ts", "apps/sample/**/*.ts"],
       "rules": {
         "no-restricted-imports": "off"

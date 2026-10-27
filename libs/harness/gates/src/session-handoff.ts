@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import type { FrictionCluster } from "./friction-log.js"
+import type { FrictionCluster, LoopThrashingStatus } from "./friction-log.js"
 
 export interface SessionHandoffInput {
   readonly stampValid: boolean
@@ -7,6 +7,7 @@ export interface SessionHandoffInput {
   readonly activeStubs: ReadonlyArray<string>
   readonly missingPlannedFns: ReadonlyArray<string>
   readonly frictionClusters: ReadonlyArray<FrictionCluster>
+  readonly loopThrashing?: LoopThrashingStatus | undefined
 }
 
 export interface SessionHandoffSummary {
@@ -16,6 +17,7 @@ export interface SessionHandoffSummary {
   readonly missingPlannedFns: ReadonlyArray<string>
   readonly recentFrictionCount: number
   readonly topFrictionSummary: ReadonlyArray<string>
+  readonly stuckLoopEscalation?: string | null | undefined
   readonly handoffMessage: string | null
 }
 
@@ -32,16 +34,26 @@ export const decideSessionHandoff = Effect.fn("SessionHandoff.decide")(function*
     .slice(0, 3)
     .map((c) => `[${c.kind} x${c.occurrences}] ${c.summary}`)
 
+  const isStuck = input.loopThrashing?.stuck === true
+  const stuckLoopEscalation =
+    isStuck && input.loopThrashing?.escalationMessage
+      ? input.loopThrashing.escalationMessage
+      : null
+
   const hasActiveTask =
     !input.stampValid ||
     input.activeStubs.length > 0 ||
     input.missingPlannedFns.length > 0 ||
-    input.frictionClusters.length > 0
+    input.frictionClusters.length > 0 ||
+    isStuck
 
   let handoffMessage: string | null = null
 
   if (hasActiveTask) {
     const lines: Array<string> = ["[Harness Context Handoff]"]
+    if (isStuck && input.loopThrashing?.escalationMessage) {
+      lines.push(input.loopThrashing.escalationMessage)
+    }
     if (input.activeStubs.length > 0) {
       lines.push(`Active stub() skeletons remaining: ${input.activeStubs.join(", ")}`)
     }
@@ -66,6 +78,7 @@ export const decideSessionHandoff = Effect.fn("SessionHandoff.decide")(function*
     missingPlannedFns: input.missingPlannedFns,
     recentFrictionCount,
     topFrictionSummary,
+    stuckLoopEscalation,
     handoffMessage
   } satisfies SessionHandoffSummary
 })
