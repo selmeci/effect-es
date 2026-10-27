@@ -5,6 +5,7 @@ import * as Graph from "effect/Graph"
 import type { GovernanceDocStatus, HarnessGraph } from "@harness/graph"
 import { decideEarsSpecQuality } from "./ears-lint.js"
 import { decideAdrDocQuality } from "./adr-lint.js"
+import { decideOntologyInvariants } from "./ontology-invariants.js"
 
 export type GcFindingKind =
   | "unused-service"
@@ -17,6 +18,7 @@ export type GcFindingKind =
   | "stale-doc-reference"
   | "ears-spec-lint"
   | "adr-doc-lint"
+  | "ontology-invariant"
 
 export interface GcFinding {
   readonly kind: GcFindingKind
@@ -79,7 +81,10 @@ const IGNORED_UNTESTED_FNS = new Set([
   "Harness.checkPlanStepCoverage",
   "Harness.triageFailure",
   "EarsSpecLint.decide",
-  "AdrDocLint.decide"
+  "AdrDocLint.decide",
+  "OntologyInvariants.decide",
+  "Harness.checkOntologyPairConflict",
+  "Harness.evaluateOntologyConflicts"
 ])
 
 export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
@@ -381,6 +386,19 @@ export const decideGraphEntropy = Effect.fn("GraphGc.decide")(function* (
         })
       }
     }
+  }
+
+  // 10. ontology-invariants
+  const ontologyReport = yield* decideOntologyInvariants({
+    graph: input.graph,
+    governanceDocs: input.governanceDocs
+  })
+  for (const f of ontologyReport.findings) {
+    findings.push({
+      kind: "ontology-invariant",
+      nodeId: f.nodeId,
+      message: `[${f.kind}] ${f.message}`
+    })
   }
 
   return {

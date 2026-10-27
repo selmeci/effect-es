@@ -24,6 +24,7 @@ describe("harness cli baseline", () => {
       "ingest",
       "session",
       "doctor",
+      "ontology",
       "help"
     ])
     for (const command of COMMANDS) {

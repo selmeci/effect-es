@@ -8,6 +8,8 @@ import * as DecisionModel from "effect/ai/DecisionModel"
 import {
   checkPlanStepCoverage,
   decideGuardCommand,
+  evaluateOntologyConflicts,
+  extractOntologyConflictPairs,
   IDIOM_BLOCKS,
   IdiomRouterV1,
   LocalDecisionModel,
@@ -23,8 +25,10 @@ import {
   classifyCommand,
   classifyFileWrite,
   clearFrictionEvents,
+  decideOntologyInvariants,
   diffPlanAndImplGraphs,
   type FrictionEventKind,
+  type GovernanceDocReference,
   loadGovernanceDocsFromDisk,
   readFrictionEvents,
   resolveHarnessStateDir,
@@ -40,6 +44,10 @@ import {
   loadGraphSnapshot,
   mergeOmnigraphBranch,
   OmnigraphSync,
+  projectOntologyLayers,
+  queryOntologyImpact,
+  queryOntologyWhy,
+  renderOntologyMermaid,
   syncToOmnigraphAndSnapshot
 } from "@harness/graph"
 import { buildWorkspaceFnIndex } from "@harness/ingest"
@@ -56,6 +64,7 @@ export const COMMANDS = [
   "ingest",
   "session",
   "doctor",
+  "ontology",
   "help"
 ] as const
 
@@ -76,6 +85,7 @@ export interface CliEnv {
     readonly stepDiff: string
   }> | undefined
   readonly skipSubprocessVerify?: boolean | undefined
+  readonly governanceDocs?: ReadonlyArray<GovernanceDocReference> | undefined
 }
 
 export interface CliResult {
@@ -907,6 +917,92 @@ const handleLearn = (
     }
   })
 
+const handleOntology = (
+  argv: ReadonlyArray<string>,
+  options: CliEnv | undefined,
+  decisionLayer: Layer.Layer<DecisionModel.DecisionModel>
+): Effect.Effect<CliResult> =>
+  Effect.gen(function* () {
+    const repoRoot = options?.repoRoot ?? findWorkspaceRoot()
+    const graph =
+      options?.implGraph ?? (yield* extractWorkspaceTypeAwareGraph(repoRoot))
+    const sub = argv[1] ?? "layers"
+
+    switch (sub) {
+      case "why": {
+        const symbol = argv[2] ?? ""
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify(queryOntologyWhy(graph, symbol)),
+          stderr: ""
+        }
+      }
+      case "impact": {
+        const symbol = argv[2] ?? ""
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify(queryOntologyImpact(graph, symbol)),
+          stderr: ""
+        }
+      }
+      case "layers": {
+        const formatMermaid = argv.includes("--format=mermaid")
+        return {
+          exitCode: 0,
+          stdout: formatMermaid
+            ? renderOntologyMermaid(graph)
+            : JSON.stringify(projectOntologyLayers(graph)),
+          stderr: ""
+        }
+      }
+      case "check": {
+        const strict = argv.includes("--strict")
+        const scopeArg = argv.find((arg) => arg.startsWith("--scope="))
+        const scope = scopeArg ? scopeArg.slice("--scope=".length) : undefined
+
+        const allDocs =
+          options?.governanceDocs ?? loadGovernanceDocsFromDisk(repoRoot)
+        const docs = scope
+          ? allDocs.filter(
+              (doc) =>
+                doc.id.startsWith(`${scope}:`) ||
+                doc.docPath.includes(`libs/${scope}/`) ||
+                doc.docPath.includes(`apps/${scope}/`) ||
+                doc.docPath.includes(`packages/${scope}/`)
+            )
+          : allDocs
+
+        const invariants = yield* decideOntologyInvariants({
+          graph,
+          governanceDocs: docs
+        })
+        const pairs = extractOntologyConflictPairs(docs, scope)
+        const semanticConflicts = yield* evaluateOntologyConflicts(pairs).pipe(
+          Effect.provide(decisionLayer)
+        )
+        const clean = invariants.clean && semanticConflicts.length === 0
+
+        return {
+          exitCode: strict && !clean ? 1 : 0,
+          stdout: JSON.stringify({
+            clean,
+            findings: invariants.findings,
+            semanticConflicts,
+            evaluatedPairs: pairs.length
+          }),
+          stderr: ""
+        }
+      }
+      default: {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: `unknown ontology subcommand: ${sub}\nusage: harness ontology <why|impact|layers|check>`
+        }
+      }
+    }
+  })
+
 export const runCliEffect = (
   argv: ReadonlyArray<string>,
   options?: CliEnv
@@ -955,6 +1051,8 @@ export const runCliEffect = (
       case "session":
       case "doctor":
         return yield* handleDoctorOrSession(argv, options, decisionLayer)
+      case "ontology":
+        return yield* handleOntology(argv, options, decisionLayer)
       case "help":
         return {
           exitCode: 0,

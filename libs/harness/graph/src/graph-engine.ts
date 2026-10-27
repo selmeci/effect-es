@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { Effect, Option, Schema } from "effect"
 import * as Graph from "effect/Graph"
+import { classifyOntologyEdge, classifyOntologyNode } from "./archimate-ontology.js"
 import {
   type AdrDocNode,
   type BuildHarnessGraphInput,
@@ -534,6 +535,7 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
   const g = harnessGraph.graph
 
   for (const [, node] of Graph.nodes(g)) {
+    const ont = classifyOntologyNode(node)
     switch (node._tag) {
       case "EffectFn": {
         lines.push(
@@ -547,7 +549,10 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
               file: node.file,
               line: node.line,
               successType: node.successType,
-              isStub: node.isStub
+              isStub: node.isStub,
+              archimateLayer: ont.layer,
+              archimateAspect: ont.aspect,
+              archimateElementType: ont.elementType
             }
           })
         )
@@ -562,7 +567,10 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
               tagId: node.tagId,
               name: node.name,
               packageTag: node.packageTag,
-              file: node.file
+              file: node.file,
+              archimateLayer: ont.layer,
+              archimateAspect: ont.aspect,
+              archimateElementType: ont.elementType
             }
           })
         )
@@ -577,7 +585,10 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
               qualname: node.qualname,
               layerKind: node.layerKind,
               packageTag: node.packageTag,
-              file: node.file
+              file: node.file,
+              archimateLayer: ont.layer,
+              archimateAspect: ont.aspect,
+              archimateElementType: ont.elementType
             }
           })
         )
@@ -590,7 +601,10 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             id: node.errorTag,
             data: {
               errorTag: node.errorTag,
-              file: node.file
+              file: node.file,
+              archimateLayer: ont.layer,
+              archimateAspect: ont.aspect,
+              archimateElementType: ont.elementType
             }
           })
         )
@@ -606,7 +620,10 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
               testFile: node.testFile,
               testName: node.testName,
               lastTreeHash: node.lastTreeHash,
-              isPropertyTest: node.isPropertyTest ?? false
+              isPropertyTest: node.isPropertyTest ?? false,
+              archimateLayer: ont.layer,
+              archimateAspect: ont.aspect,
+              archimateElementType: ont.elementType
             }
           })
         )
@@ -620,7 +637,10 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             data: {
               slug: node.slug,
               path: node.path,
-              summary: node.summary
+              summary: node.summary,
+              archimateLayer: ont.layer,
+              archimateAspect: ont.aspect,
+              archimateElementType: ont.elementType
             }
           })
         )
@@ -639,7 +659,10 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
               enforcedByFiles: node.enforcedByFiles,
               referencedSpans: node.referencedSpans,
               referencedServices: node.referencedServices,
-              referencedErrors: node.referencedErrors
+              referencedErrors: node.referencedErrors,
+              archimateLayer: ont.layer,
+              archimateAspect: ont.aspect,
+              archimateElementType: ont.elementType
             }
           })
         )
@@ -658,7 +681,10 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
               enforcedByFiles: node.enforcedByFiles,
               referencedSpans: node.referencedSpans,
               referencedServices: node.referencedServices,
-              referencedErrors: node.referencedErrors
+              referencedErrors: node.referencedErrors,
+              archimateLayer: ont.layer,
+              archimateAspect: ont.aspect,
+              archimateElementType: ont.elementType
             }
           })
         )
@@ -668,6 +694,7 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
   }
 
   for (const [, edge] of Graph.edges(g)) {
+    const rel = classifyOntologyEdge(edge.data)
     switch (edge.data._tag) {
       case "RequiresService": {
         lines.push(
@@ -676,7 +703,9 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             type: "RequiresService",
             from: edge.data.callerQualname,
             to: edge.data.tagId,
-            data: {}
+            data: {
+              archimateRelation: rel
+            }
           })
         )
         break
@@ -688,7 +717,9 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             type: "FailsWith",
             from: edge.data.callerQualname,
             to: edge.data.errorTag,
-            data: {}
+            data: {
+              archimateRelation: rel
+            }
           })
         )
         break
@@ -700,7 +731,9 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             type: "ProvidesService",
             from: edge.data.layerQualname,
             to: edge.data.tagId,
-            data: {}
+            data: {
+              archimateRelation: rel
+            }
           })
         )
         break
@@ -712,7 +745,9 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             type: "LayerRequires",
             from: edge.data.layerQualname,
             to: edge.data.tagId,
-            data: {}
+            data: {
+              archimateRelation: rel
+            }
           })
         )
         break
@@ -726,7 +761,8 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             to: edge.data.calleeQualname,
             data: {
               callCount: edge.data.callCount,
-              receiverLayer: edge.data.receiverLayer
+              receiverLayer: edge.data.receiverLayer,
+              archimateRelation: rel
             }
           })
         )
@@ -741,7 +777,8 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             to: edge.data.calleeQualname,
             data: {
               callCount: edge.data.callCount,
-              receiverLayer: edge.data.receiverLayer
+              receiverLayer: edge.data.receiverLayer,
+              archimateRelation: rel
             }
           })
         )
@@ -755,7 +792,8 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             from: edge.data.adrId,
             to: edge.data.targetKey,
             data: {
-              targetKind: edge.data.targetKind
+              targetKind: edge.data.targetKind,
+              archimateRelation: rel
             }
           })
         )
@@ -769,7 +807,8 @@ export const toOmnigraphNdjson = (harnessGraph: HarnessGraph): string => {
             from: edge.data.specId,
             to: edge.data.targetKey,
             data: {
-              targetKind: edge.data.targetKind
+              targetKind: edge.data.targetKind,
+              archimateRelation: rel
             }
           })
         )

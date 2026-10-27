@@ -15,6 +15,7 @@ spans:
   - LoopCircuitBreaker.decide
   - EarsSpecLint.decide
   - AdrDocLint.decide
+  - OntologyInvariants.decide
 ---
 
 # harness:ADR-0001: Deterministic Gates and Compilable Plan-as-Code Skeletons Over Prose Plans
@@ -90,4 +91,4 @@ We establish two foundational architectural rules for the harness:
 | --- | --- | --- | --- |
 | Compilable plan skeletons | libs/harness/gates/src/stub.ts | `stub<A, E, R>()` and harness plan-check | `GraphGc.decide` |
 | Deterministic graph policies | libs/harness/graph/src/policy-check.ts | checkEffectGraph | `SpanBudget.decide`, `MigrationSafety.decide` |
-| Syntax bans & ADR linting | libs/harness/gates/src/policy.ts | tools/oxlint/syntax-bans.js & AdrDocLint.decide | `MutationCheck.decide`, `LoopCircuitBreaker.decide`, `EarsSpecLint.decide`, `AdrDocLint.decide` |
+| Syntax bans & ADR linting | libs/harness/gates/src/policy.ts | tools/oxlint/syntax-bans.js & AdrDocLint.decide | `MutationCheck.decide`, `LoopCircuitBreaker.decide`, `EarsSpecLint.decide`, `AdrDocLint.decide`, `OntologyInvariants.decide` |

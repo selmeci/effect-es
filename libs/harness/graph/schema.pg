@@ -6,6 +6,9 @@ node EffectFn {
   line: I32
   successType: String
   isStub: Bool @index
+  archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
+  archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
+  archimateElementType: String @index
 }
 
 node ServiceTag {
@@ -13,6 +16,9 @@ node ServiceTag {
   name: String @index
   packageTag: enum(contract, domain, service, infra, app) @index
   file: String @index
+  archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
+  archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
+  archimateElementType: String @index
 }
 
 node ServiceLayer {
@@ -20,11 +26,17 @@ node ServiceLayer {
   layerKind: enum(live, test, emulated, infra) @index
   packageTag: enum(contract, domain, service, infra, app) @index
   file: String @index
+  archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
+  archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
+  archimateElementType: String @index
 }
 
 node TaggedError {
   errorTag: String @key
   file: String @index
+  archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
+  archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
+  archimateElementType: String @index
 }
 
 node VitestCase {
@@ -32,38 +44,91 @@ node VitestCase {
   testFile: String @index
   testName: String @index
   lastTreeHash: String
+  isPropertyTest: Bool @index
+  archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
+  archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
+  archimateElementType: String @index
 }
 
 node PatternDoc {
   slug: String @key
   path: String @index
   summary: String @index
+  archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
+  archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
+  archimateElementType: String @index
+}
+
+node AdrDoc {
+  id: String @key
+  title: String @index
+  status: enum(accepted, proposed, superseded, deprecated) @index
+  path: String @index
+  enforcedByFiles: List<String>
+  referencedSpans: List<String>
+  referencedServices: List<String>
+  referencedErrors: List<String>
+  archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
+  archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
+  archimateElementType: String @index
+}
+
+node EarsSpec {
+  id: String @key
+  title: String @index
+  status: enum(accepted, proposed, superseded, deprecated) @index
+  path: String @index
+  enforcedByFiles: List<String>
+  referencedSpans: List<String>
+  referencedServices: List<String>
+  referencedErrors: List<String>
+  archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
+  archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
+  archimateElementType: String @index
 }
 
 edge RequiresService: EffectFn -> ServiceTag @card(0..) {
+  archimateRelation: String @index
   @unique(@src, @dst)
 }
 
 edge FailsWith: EffectFn -> TaggedError @card(0..) {
+  archimateRelation: String @index
   @unique(@src, @dst)
 }
 
 edge ProvidesService: ServiceLayer -> ServiceTag @card(0..) {
+  archimateRelation: String @index
   @unique(@src, @dst)
 }
 
 edge LayerRequires: ServiceLayer -> ServiceTag @card(0..) {
+  archimateRelation: String @index
   @unique(@src, @dst)
 }
 
 edge TracedCall: EffectFn -> EffectFn @card(0..) {
   callCount: I64
   receiverLayer: String?
+  archimateRelation: String @index
   @unique(@src, @dst)
 }
 
 edge ExercisesSpan: VitestCase -> EffectFn @card(0..) {
   callCount: I64
   receiverLayer: String?
+  archimateRelation: String @index
+  @unique(@src, @dst)
+}
+
+edge GovernsSymbol: AdrDoc -> Any @card(0..) {
+  targetKind: String @index
+  archimateRelation: String @index
+  @unique(@src, @dst)
+}
+
+edge SpecifiesSymbol: EarsSpec -> Any @card(0..) {
+  targetKind: String @index
+  archimateRelation: String @index
   @unique(@src, @dst)
 }

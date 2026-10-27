@@ -3,6 +3,7 @@ import * as AiError from "effect/ai/AiError"
 import * as DecisionModel from "effect/ai/DecisionModel"
 import type { IdiomBlock } from "./idiom-router.js"
 import type { LearnTarget } from "./learn-decision.js"
+import type { OntologyConflictKind } from "./ontology-conflict-decision.js"
 
 export interface MockDecisionModelOverrides {
   readonly implementedProb?: number | undefined
@@ -15,6 +16,8 @@ export interface MockDecisionModelOverrides {
   readonly triageKind?: "mechanical" | "semantic" | undefined
   readonly learnActionableProb?: number | undefined
   readonly learnTargetLabel?: LearnTarget | undefined
+  readonly contradictsProb?: number | undefined
+  readonly conflictKindLabel?: OntologyConflictKind | undefined
 }
 
 export const makeMockDecisionModelLayer = (
@@ -43,6 +46,8 @@ export const makeMockDecisionModelLayer = (
                 probability = overrides?.exfiltrationProb !== undefined ? overrides.exfiltrationProb : 0.0
               } else if (key === "actionable") {
                 probability = overrides?.learnActionableProb !== undefined ? overrides.learnActionableProb : 0.9
+              } else if (key === "contradicts") {
+                probability = overrides?.contradictsProb !== undefined ? overrides.contradictsProb : 0.1
               }
               answers[key] = {
                 _tag: "Probability",
@@ -57,6 +62,8 @@ export const makeMockDecisionModelLayer = (
                 chosenLabel = overrides?.triageKind ?? (labels.includes("semantic") ? "semantic" : chosenLabel)
               } else if (key === "target") {
                 chosenLabel = overrides?.learnTargetLabel ?? (labels.includes("agent-pattern") ? "agent-pattern" : chosenLabel)
+              } else if (key === "conflictKind") {
+                chosenLabel = overrides?.conflictKindLabel ?? (labels.includes("none") ? "none" : chosenLabel)
               }
               const probabilities: Record<string, number> = {}
               for (const l of labels) {

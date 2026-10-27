@@ -13,7 +13,7 @@ In this project, the plan IS compilable TypeScript code. Never write long Markdo
 
 ## Step-by-Step Recipe
 
-1. **Route Idioms:** Call `harness_route` for each non-trivial capability (e.g., D1, Durable Object RPC, `HttpApi`, `AtomHttpApi`) and read the matched `agent-patterns/*.md` file.
+1. **Route Idioms & Inspect Ontology:** Call `harness_route` for each non-trivial capability (e.g., D1, Durable Object RPC, `HttpApi`, `AtomHttpApi`) and read the matched `agent-patterns/*.md` file. For any existing services or use-cases being modified, call `harness_ontology_why` and `harness_ontology_impact` to inspect cross-layer ArchiMate dependencies and governing ADR/EARS constraints.
 2. **Define Boundary Types (`type:contract` & `type:service`):**
    - `WHEN <trigger>` $\rightarrow$ Request/response `Schema.Struct` and `HttpApiEndpoint` / `Rpc` in `type:contract`.
    - `IF <condition>, THEN` $\rightarrow$ `Schema.TaggedErrorClass` in `type:contract`.
@@ -38,9 +38,10 @@ In this project, the plan IS compilable TypeScript code. Never write long Markdo
      5. `## Rejected Alternatives` (numbered `### N · <Option Name>` subsections with middle dot `·`, each opening with `**Why rejected:** <concrete failure mode or constraint violation>`)
      6. `## Consequences and Enforcement` (containing `### Positive Consequences`, `### Negative Consequences and Trade-offs`, and `### Deterministic Enforcement` with the 4-column table `| Rule | Enforced By | Gate / Mechanism | Governed Symbols |`)
    - **Parser-Safe Frontmatter & Omnigraph Links:** Include `id`, `title`, `status: accepted`, `date`, `enforced_by` (at least 1 existing repo file), and at least one of `spans:`, `services:`, or `errors:` to establish `GovernsSymbol` edges in Omnigraph.
-   - **Verify Governance Docs with Deterministic Gate:** Run `gc --strict` to verify both EARS specs (`EarsSpecLint.decide`) and ADRs (`AdrDocLint.decide` and `stale-doc-reference`):
+   - **Verify Governance Docs with Deterministic Gate:** Run `gc --strict` and `ontology check --strict` (or MCP `harness_ontology_check`) to verify both EARS specs (`EarsSpecLint.decide`), ADRs (`AdrDocLint.decide` and `stale-doc-reference`), deterministic cross-layer ArchiMate invariants (`OntologyInvariants.decide`), and semantic conflict detection (`OntologyConflictV1`):
      ```bash
      node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts gc --strict
+     node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts ontology check --strict
      ```
 
 ## Skeleton Example

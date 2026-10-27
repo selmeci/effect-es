@@ -1,0 +1,104 @@
+query resolve_effect_fn($spanOrQualname: String) {
+  match {
+    $fn: EffectFn
+  }
+  where $fn.spanName = $spanOrQualname or $fn.qualname = $spanOrQualname
+  return {
+    $fn.qualname,
+    $fn.spanName,
+    $fn.packageTag,
+    $fn.file,
+    $fn.line,
+    $fn.successType,
+    $fn.isStub,
+    $fn.archimateLayer,
+    $fn.archimateAspect,
+    $fn.archimateElementType
+  }
+}
+
+query find_service_providers($tagId: String) {
+  match {
+    $layer: ServiceLayer -[:ProvidesService]-> $tag: ServiceTag
+  }
+  where $tag.tagId = $tagId or $tag.name = $tagId
+  return {
+    layerQualname: $layer.qualname,
+    layerKind: $layer.layerKind,
+    packageTag: $layer.packageTag,
+    file: $layer.file,
+    tagId: $tag.tagId
+  }
+}
+
+query find_callers($target: String) {
+  match {
+    $caller -[$rel]-> $callee
+  }
+  where $callee.qualname = $target or $callee.spanName = $target or $callee.tagId = $target or $callee.name = $target or $callee.errorTag = $target
+  return {
+    caller: $caller,
+    rel: $rel,
+    callee: $callee
+  }
+}
+
+query find_callees($caller: String) {
+  match {
+    $src -[$rel]-> $callee
+  }
+  where $src.qualname = $caller or $src.spanName = $caller or $src.id = $caller or $src.testId = $caller
+  return {
+    src: $src,
+    rel: $rel,
+    callee: $callee
+  }
+}
+
+query find_tests_reaching($callee: String) {
+  match {
+    $test: VitestCase -[:ExercisesSpan*1..10]-> $fn: EffectFn
+  }
+  where $fn.qualname = $callee or $fn.spanName = $callee
+  return {
+    testId: $test.testId,
+    testFile: $test.testFile,
+    testName: $test.testName
+  }
+}
+
+query ontology_layer_nodes($layer: String) {
+  match {
+    $node
+  }
+  where $node.archimateLayer = $layer
+  return {
+    node: $node
+  }
+}
+
+query ontology_governed_by($symbol: String) {
+  match {
+    $doc -[$rel:GovernsSymbol | :SpecifiesSymbol]-> $target
+  }
+  where $target.qualname = $symbol or $target.tagId = $symbol or $target.errorTag = $symbol or $target.spanName = $symbol or $target.name = $symbol
+  return {
+    doc: $doc,
+    rel: $rel,
+    target: $target
+  }
+}
+
+query untested_domain_fns() {
+  match {
+    $fn: EffectFn
+  }
+  where $fn.packageTag = "domain" and not $fn.isStub and not exists {
+    $test: VitestCase -[:ExercisesSpan*1..10]-> $fn
+  }
+  return {
+    qualname: $fn.qualname,
+    spanName: $fn.spanName,
+    file: $fn.file
+  }
+}

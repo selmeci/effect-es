@@ -11,12 +11,27 @@ import {
   findCallees,
   findCallers,
   findTestsReaching,
+  HARNESS_GQ_QUERY_NAMES,
+  type HarnessGqQueryName,
   type HarnessGraph,
+  invokeOmnigraphNamedQuery,
   loadGraphSnapshot,
+  OmnigraphSync,
+  projectOntologyLayers,
+  queryOntologyImpact,
+  queryOntologyWhy,
   resolveNode,
   structuralSearch
 } from "@harness/graph"
-import { LocalDecisionModel, routeStep } from "@harness/decision"
+import {
+  decideOntologyInvariants,
+  evaluateOntologyConflicts,
+  extractOntologyConflictPairs,
+  type GovernanceDocReference,
+  loadGovernanceDocsFromDisk,
+  LocalDecisionModel,
+  routeStep
+} from "@harness/decision"
 
 export class UnknownToolError extends Schema.TaggedError<UnknownToolError>()(
   "UnknownToolError",
@@ -29,6 +44,8 @@ export interface ServerOptions {
   readonly graph?: HarnessGraph
   readonly snapshotPath?: string
   readonly decisionLayer?: Layer.Layer<DecisionModel.DecisionModel>
+  readonly repoRoot?: string
+  readonly governanceDocs?: ReadonlyArray<GovernanceDocReference>
 }
 
 const findRepoRoot = (startDir: string): string => {
@@ -122,6 +139,57 @@ export const executeToolEffect = (
             : `agent-patterns/${block}.md`
         return { block, patternFile }
       }
+      case "harness_ontology_why": {
+        const symbolOrSpan = (args as { symbolOrSpan: string }).symbolOrSpan
+        const graph = yield* resolveGraph(options)
+        return queryOntologyWhy(graph, symbolOrSpan)
+      }
+      case "harness_ontology_impact": {
+        const symbolOrSpan = (args as { symbolOrSpan: string }).symbolOrSpan
+        const graph = yield* resolveGraph(options)
+        return queryOntologyImpact(graph, symbolOrSpan)
+      }
+      case "harness_ontology_check": {
+        const scope = (args as { scope?: string | undefined }).scope
+        const graph = yield* resolveGraph(options)
+        const root = options?.repoRoot ?? findRepoRoot(process.cwd())
+        const docs = options?.governanceDocs ?? loadGovernanceDocsFromDisk(root)
+        const invariants = yield* decideOntologyInvariants({
+          graph,
+          governanceDocs: docs
+        })
+        const pairs = extractOntologyConflictPairs(docs, scope)
+        const decisionLayer = options?.decisionLayer ?? LocalDecisionModel
+        const semanticConflicts = yield* evaluateOntologyConflicts(pairs).pipe(
+          Effect.provide(decisionLayer)
+        )
+        const projection = projectOntologyLayers(graph)
+        return {
+          clean: invariants.clean && semanticConflicts.length === 0,
+          findings: invariants.findings,
+          semanticConflicts,
+          evaluatedPairs: pairs.length,
+          layerCounts: {
+            Motivation: projection.layers.Motivation.length,
+            Business: projection.layers.Business.length,
+            Application: projection.layers.Application.length,
+            Technology: projection.layers.Technology.length,
+            Implementation: projection.layers.Implementation.length
+          }
+        }
+      }
+      case "harness_gq_query": {
+        const queryName = (args as { queryName: HarnessGqQueryName }).queryName
+        const params = (args as { params?: Record<string, unknown> | undefined }).params
+        const branch = (args as { branch?: string | undefined }).branch
+        const graph = yield* resolveGraph(options)
+        return yield* invokeOmnigraphNamedQuery({
+          name: queryName,
+          params,
+          branch,
+          fallbackGraph: graph
+        }).pipe(Effect.provide(OmnigraphSync.Live))
+      }
       default: {
         return yield* new UnknownToolError({ toolName })
       }
@@ -214,6 +282,95 @@ export const createServer = (options?: ServerOptions): McpServer => {
     (args) =>
       Effect.runPromise(
         executeToolEffect("harness_route", args, options).pipe(
+          Effect.map((data) => ({
+            content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
+          }))
+        )
+      )
+  )
+
+  server.tool(
+    "harness_ontology_why",
+    "Trace upward from any symbol, service, layer, error, or span to Motivation (EARS & ADR)",
+    {
+      symbolOrSpan: z
+        .string()
+        .describe(
+          "Symbol, service, layer, error, or span name to trace upward to Motivation (EARS & ADR)"
+        )
+    },
+    (args) =>
+      Effect.runPromise(
+        executeToolEffect("harness_ontology_why", args, options).pipe(
+          Effect.map((data) => ({
+            content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
+          }))
+        )
+      )
+  )
+
+  server.tool(
+    "harness_ontology_impact",
+    "Analyze cross-layer ArchiMate impact for a symbol, service, layer, error, or span",
+    {
+      symbolOrSpan: z
+        .string()
+        .describe(
+          "Symbol, service, layer, error, or span name to analyze cross-layer ArchiMate impact for"
+        )
+    },
+    (args) =>
+      Effect.runPromise(
+        executeToolEffect("harness_ontology_impact", args, options).pipe(
+          Effect.map((data) => ({
+            content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
+          }))
+        )
+      )
+  )
+
+  server.tool(
+    "harness_ontology_check",
+    "Check deterministic cross-layer ArchiMate invariants and Clef semantic conflicts across governance docs and graph",
+    {
+      scope: z
+        .string()
+        .optional()
+        .describe(
+          "Optional scope name (e.g. 'sample') to check deterministic cross-layer invariants and Clef semantic conflicts"
+        )
+    },
+    (args) =>
+      Effect.runPromise(
+        executeToolEffect("harness_ontology_check", args, options).pipe(
+          Effect.map((data) => ({
+            content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
+          }))
+        )
+      )
+  )
+
+  server.tool(
+    "harness_gq_query",
+    "Execute a canonical Omnigraph .gq query (against live Omnigraph v0.14.0 or deterministic in-memory fallback)",
+    {
+      queryName: z
+        .enum(HARNESS_GQ_QUERY_NAMES)
+        .describe(
+          "Name of the canonical .gq query in libs/harness/graph/queries/harness.gq"
+        ),
+      params: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Query parameters matching $var placeholders"),
+      branch: z
+        .string()
+        .optional()
+        .describe("Target graph branch (defaults to 'main')")
+    },
+    (args) =>
+      Effect.runPromise(
+        executeToolEffect("harness_gq_query", args, options).pipe(
           Effect.map((data) => ({
             content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
           }))

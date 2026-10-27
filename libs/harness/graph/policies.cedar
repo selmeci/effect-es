@@ -3,7 +3,10 @@
 // 1. Permit agent-mcp to read data on main and plan/* branches
 permit (
     principal == Omnigraph::Subject::"agent-mcp",
-    action == Omnigraph::Action::"read",
+    action in [
+        Omnigraph::Action::"read",
+        Omnigraph::Action::"invoke_query"
+    ],
     resource
 )
 when {
@@ -30,7 +33,9 @@ permit (
         Omnigraph::Action::"change",
         Omnigraph::Action::"branch_create",
         Omnigraph::Action::"branch_merge",
-        Omnigraph::Action::"branch_delete"
+        Omnigraph::Action::"branch_delete",
+        Omnigraph::Action::"invoke_query",
+        Omnigraph::Action::"export"
     ],
     resource
 );

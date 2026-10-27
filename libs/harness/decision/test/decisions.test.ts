@@ -9,6 +9,7 @@ import {
   LearnProposalV1,
   makeFailingDecisionModelLayer,
   makeMockDecisionModelLayer,
+  OntologyConflictV1,
   PlanStepCoverageV1,
   routeStep,
   triageFailure,
@@ -16,8 +17,8 @@ import {
 } from "../src/index.js"
 
 describe("Harness decision definitions & fallbacks", () => {
-  it("keeps all 5 decision definitions within Ollama System One limits (<=26 options, <=64 questions)", () => {
-    for (const def of [IdiomRouterV1, GuardV1, TriageV1, PlanStepCoverageV1, LearnProposalV1]) {
+  it("keeps all decision definitions within Ollama System One limits (<=26 options, <=64 questions)", () => {
+    for (const def of [IdiomRouterV1, GuardV1, TriageV1, PlanStepCoverageV1, LearnProposalV1, OntologyConflictV1]) {
       expect(() => assertDecisionLimits(def)).not.toThrow()
     }
   })
