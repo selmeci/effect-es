@@ -144,53 +144,72 @@ export const initialCartState: CartState = {
 }
 
 export const evolveCart = (state: CartState, event: CartEvent): CartState =>
-  match(event)
-    .with({ _tag: "ItemAdded" }, (e) => {
-      const existing = state.items.find((item) => item.sku === e.sku)
-      const items = existing
-        ? state.items.map((item) =>
-            item.sku === e.sku
-              ? { sku: item.sku, qty: item.qty + e.qty }
-              : item
-          )
-        : [...state.items, { sku: e.sku, qty: e.qty }]
-      return {
-        _tag: "Open" as const,
-        cartId: e.cartId,
-        customerId: e.customerId,
-        items: items as [CartItem, ...Array<CartItem>]
-      }
-    })
-    .with({ _tag: "ItemRemoved" }, (e) => {
-      const items = state.items.flatMap((item) => {
-        if (item.sku !== e.sku) {
-          return [item]
-        }
-        const remainingQty = item.qty - e.qty
-        return remainingQty <= 0 ? [] : [{ sku: item.sku, qty: remainingQty }]
-      })
-      if (items.length === 0) {
-        return {
-          _tag: "Empty" as const,
+  match(state)
+    .with({ _tag: "CheckedOut" }, () => state)
+    .with({ _tag: "Empty" }, () =>
+      match(event)
+        .with({ _tag: "ItemAdded" }, (e) => ({
+          _tag: "Open" as const,
           cartId: e.cartId,
-          customerId: state.customerId,
-          items: []
-        }
-      }
-      return {
-        _tag: "Open" as const,
-        cartId: e.cartId,
-        customerId: state.customerId,
-        items: items as [CartItem, ...Array<CartItem>]
-      }
-    })
-    .with({ _tag: "CheckedOut" }, (e) => ({
-      _tag: "CheckedOut" as const,
-      cartId: e.cartId,
-      customerId: state.customerId,
-      items: state.items,
-      checkedOutAt: e.at
-    }))
+          customerId: e.customerId,
+          items: [{ sku: e.sku, qty: e.qty }] as [CartItem, ...Array<CartItem>]
+        }))
+        .with({ _tag: "ItemRemoved" }, () => state)
+        .with({ _tag: "CheckedOut" }, () => state)
+        .exhaustive()
+    )
+    .with({ _tag: "Open" }, (openState) =>
+      match(event)
+        .with({ _tag: "ItemAdded" }, (e) => {
+          const existing = openState.items.find((item) => item.sku === e.sku)
+          const items = existing
+            ? openState.items.map((item) =>
+                item.sku === e.sku
+                  ? { sku: item.sku, qty: (item.qty + e.qty) as PositiveInt }
+                  : item
+              )
+            : [...openState.items, { sku: e.sku, qty: e.qty }]
+          return {
+            _tag: "Open" as const,
+            cartId: e.cartId,
+            customerId: e.customerId,
+            items: items as [CartItem, ...Array<CartItem>]
+          }
+        })
+        .with({ _tag: "ItemRemoved" }, (e) => {
+          const items = openState.items.flatMap((item) => {
+            if (item.sku !== e.sku) {
+              return [item]
+            }
+            const remainingQty = item.qty - e.qty
+            return remainingQty <= 0
+              ? []
+              : [{ sku: item.sku, qty: remainingQty as PositiveInt }]
+          })
+          if (items.length === 0) {
+            return {
+              _tag: "Empty" as const,
+              cartId: e.cartId,
+              customerId: openState.customerId,
+              items: []
+            }
+          }
+          return {
+            _tag: "Open" as const,
+            cartId: e.cartId,
+            customerId: openState.customerId,
+            items: items as [CartItem, ...Array<CartItem>]
+          }
+        })
+        .with({ _tag: "CheckedOut" }, (e) => ({
+          _tag: "CheckedOut" as const,
+          cartId: e.cartId,
+          customerId: openState.customerId,
+          items: openState.items,
+          checkedOutAt: e.at
+        }))
+        .exhaustive()
+    )
     .exhaustive()
 
 export const decideCart = (

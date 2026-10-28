@@ -2,6 +2,9 @@ import { Effect, Schema } from "effect"
 import { match } from "ts-pattern"
 import { Decider } from "../../src/decider.js"
 
+export const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
+export type PositiveInt = typeof PositiveInt.Type
+
 // ============================================================================
 // Inventory Fixture Errors
 // ============================================================================
@@ -18,8 +21,8 @@ export class InsufficientStockError extends Schema.TaggedError<InsufficientStock
   "InsufficientStockError",
   {
     sku: Schema.String,
-    requestedQty: Schema.Int,
-    availableQty: Schema.Int
+    requestedQty: PositiveInt,
+    availableQty: Schema.Natural
   }
 ) {}
 
@@ -36,8 +39,8 @@ export class ReservationConflictError extends Schema.TaggedError<ReservationConf
   {
     sku: Schema.String,
     reservationId: Schema.String,
-    existingQty: Schema.Int,
-    requestedQty: Schema.Int,
+    existingQty: PositiveInt,
+    requestedQty: PositiveInt,
     existingCartId: Schema.String,
     requestedCartId: Schema.String
   }
@@ -46,9 +49,6 @@ export class ReservationConflictError extends Schema.TaggedError<ReservationConf
 // ============================================================================
 // Inventory Fixture Schemas (State, Commands, Events)
 // ============================================================================
-
-export const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
-export type PositiveInt = typeof PositiveInt.Type
 
 export const StockReservation = Schema.Struct({
   reservationId: Schema.NonEmptyString,
@@ -60,7 +60,7 @@ export type StockReservation = typeof StockReservation.Type
 
 export const InventoryState = Schema.Struct({
   sku: Schema.String,
-  availableQty: Schema.Int,
+  availableQty: Schema.Natural,
   reservations: Schema.Array(StockReservation)
 })
 export type InventoryState = typeof InventoryState.Type
@@ -122,8 +122,7 @@ export type StockReserved = typeof StockReserved.Type
 export const ReservationConfirmed = Schema.TaggedStruct("ReservationConfirmed", {
   version: Schema.Literal(1),
   sku: Schema.NonEmptyString,
-  reservationId: Schema.NonEmptyString,
-  qty: PositiveInt
+  reservationId: Schema.NonEmptyString
 })
 export type ReservationConfirmed = typeof ReservationConfirmed.Type
 
@@ -274,8 +273,7 @@ export const decideInventory = (
         ReservationConfirmed.make({
           version: 1,
           sku: cmd.sku,
-          reservationId: cmd.reservationId,
-          qty: existing.qty
+          reservationId: cmd.reservationId
         })
       ])
     })

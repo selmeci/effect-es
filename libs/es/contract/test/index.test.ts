@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Option, Schema } from "effect"
+import { Cause, Effect, Option, Schema } from "effect"
 import { match } from "ts-pattern"
 import {
+  Decider,
   DeciderSpec,
   EventMetadata,
   makeCommandResultSchema,
@@ -17,6 +18,7 @@ import {
   CheckedOut,
   decideCart,
   ItemAdded,
+  ItemRemoved,
   RemoveCartItem
 } from "./fixtures/cart.js"
 import {
@@ -163,6 +165,24 @@ describe("Decider.run and runDecider framework primitives (REQ-1.6)", () => {
       expect(res.newState.items).toHaveLength(2)
     })
   )
+
+  it.effect(
+    "executes decide emitting multiple events in a single command and sequentially folds all of them",
+    () =>
+      Effect.gen(function* () {
+        const multiDecider = Decider.make({
+          initialState: 0,
+          evolve: (state, event: { readonly delta: number }) => state + event.delta,
+          decide: (command: { readonly deltas: ReadonlyArray<number> }) =>
+            Effect.succeed(command.deltas.map((delta) => ({ delta })))
+        })
+
+        const res = yield* multiDecider.run({ deltas: [10, 20, 5] }, 100)
+        expect(res.events).toHaveLength(3)
+        expect(res.events).toEqual([{ delta: 10 }, { delta: 20 }, { delta: 5 }])
+        expect(res.newState).toBe(135)
+      })
+  )
 })
 
 describe("DeciderSpec negative failure tests (ensures assertions actually fail on mismatch)", () => {
@@ -185,7 +205,14 @@ describe("DeciderSpec negative failure tests (ensures assertions actually fail o
             { _tag: "ItemAdded", sku: "SKU-EXTRA", qty: 1 }
           ])
       )
-      expect(exit._tag).toBe("Failure")
+      match(exit)
+        .with({ _tag: "Failure" }, (fail) => {
+          expect(Cause.hasDies(fail.cause)).toBe(true)
+        })
+        .with({ _tag: "Success" }, () => {
+          expect.unreachable("expected spec assertion to fail with Die defect")
+        })
+        .exhaustive()
     })
   )
 
@@ -205,7 +232,14 @@ describe("DeciderSpec negative failure tests (ensures assertions actually fail o
           )
           .thenEvents([{ _tag: "ItemAdded", sku: "SKU-WRONG", qty: 1 }])
       )
-      expect(exit._tag).toBe("Failure")
+      match(exit)
+        .with({ _tag: "Failure" }, (fail) => {
+          expect(Cause.hasDies(fail.cause)).toBe(true)
+        })
+        .with({ _tag: "Success" }, () => {
+          expect.unreachable("expected spec assertion to fail with Die defect")
+        })
+        .exhaustive()
     })
   )
 
@@ -225,7 +259,14 @@ describe("DeciderSpec negative failure tests (ensures assertions actually fail o
           )
           .thenNothing
       )
-      expect(exit._tag).toBe("Failure")
+      match(exit)
+        .with({ _tag: "Failure" }, (fail) => {
+          expect(Cause.hasDies(fail.cause)).toBe(true)
+        })
+        .with({ _tag: "Success" }, () => {
+          expect.unreachable("expected spec assertion to fail with Die defect")
+        })
+        .exhaustive()
     })
   )
 
@@ -245,7 +286,14 @@ describe("DeciderSpec negative failure tests (ensures assertions actually fail o
           )
           .thenFails("InvalidQuantityError")
       )
-      expect(exit._tag).toBe("Failure")
+      match(exit)
+        .with({ _tag: "Failure" }, (fail) => {
+          expect(Cause.hasDies(fail.cause)).toBe(true)
+        })
+        .with({ _tag: "Success" }, () => {
+          expect.unreachable("expected spec assertion to fail with Die defect")
+        })
+        .exhaustive()
     })
   )
 
@@ -263,7 +311,14 @@ describe("DeciderSpec negative failure tests (ensures assertions actually fail o
           )
           .thenFails("CartAlreadyCheckedOutError")
       )
-      expect(exit._tag).toBe("Failure")
+      match(exit)
+        .with({ _tag: "Failure" }, (fail) => {
+          expect(Cause.hasDies(fail.cause)).toBe(true)
+        })
+        .with({ _tag: "Success" }, () => {
+          expect.unreachable("expected spec assertion to fail with Die defect")
+        })
+        .exhaustive()
     })
   )
 })
@@ -500,6 +555,36 @@ describe("DeciderSpec BDD DSL (exercised on Cart fixture)", () => {
     })
   )
 
+  it("CartDecider.fold preserves CheckedOut terminal state when subsequent events are folded", () => {
+    const checkedOutState: CartState = {
+      _tag: "CheckedOut",
+      cartId: "cart-term",
+      customerId: "cust-term",
+      items: [{ sku: "SKU-TERM", qty: 2 }],
+      checkedOutAt: 12345
+    }
+
+    const postCheckoutEvents: ReadonlyArray<CartEvent> = [
+      ItemAdded.make({
+        version: 1,
+        cartId: "cart-term",
+        customerId: "cust-term",
+        sku: "SKU-NEW",
+        qty: 3
+      }),
+      ItemRemoved.make({
+        version: 1,
+        cartId: "cart-term",
+        sku: "SKU-TERM",
+        qty: 1
+      })
+    ]
+
+    const folded = CartDecider.fold(postCheckoutEvents, checkedOutState)
+    expect(folded._tag).toBe("CheckedOut")
+    expect(folded).toEqual(checkedOutState)
+  })
+
   it.effect.prop(
     "CartDecider.fold satisfies deterministic replay across arbitrary events",
     {
@@ -512,7 +597,27 @@ describe("DeciderSpec BDD DSL (exercised on Cart fixture)", () => {
     ({ cartId, customerId, events, qty, sku }) =>
       Effect.gen(function* () {
         const folded = CartDecider.fold(events)
-        expect(folded.cartId).toBeDefined()
+        const stepFolded = events.reduce(
+          (acc, ev) => CartDecider.fold([ev], acc),
+          CartDecider.initialState
+        )
+        expect(folded).toEqual(stepFolded)
+        expect(CartDecider.fold(events)).toEqual(folded)
+
+        match(folded)
+          .with({ _tag: "Empty" }, (empty) => {
+            expect(empty.items).toHaveLength(0)
+          })
+          .with({ _tag: "Open" }, (open) => {
+            expect(open.items.length).toBeGreaterThan(0)
+            for (const item of open.items) {
+              expect(item.qty).toBeGreaterThan(0)
+            }
+          })
+          .with({ _tag: "CheckedOut" }, (chk) => {
+            expect(typeof chk.checkedOutAt).toBe("number")
+          })
+          .exhaustive()
 
         const state: CartState = {
           _tag: "Open",
@@ -664,8 +769,7 @@ describe("DeciderSpec BDD DSL (exercised on Inventory fixture)", () => {
           {
             _tag: "ReservationConfirmed",
             sku: "SKU-1",
-            reservationId: "res-1",
-            qty: 4
+            reservationId: "res-1"
           }
         ])
 
@@ -732,7 +836,15 @@ describe("DeciderSpec BDD DSL (exercised on Inventory fixture)", () => {
     ({ availableQty, events, requestedQty, sku }) =>
       Effect.gen(function* () {
         const folded = InventoryDecider.fold(events)
-        expect(folded.sku).toBeDefined()
+        const stepFolded = events.reduce(
+          (acc, ev) => InventoryDecider.fold([ev], acc),
+          InventoryDecider.initialState
+        )
+        expect(folded).toEqual(stepFolded)
+        expect(InventoryDecider.fold(events)).toEqual(folded)
+
+        expect(typeof folded.availableQty).toBe("number")
+        expect(Array.isArray(folded.reservations)).toBe(true)
 
         const state = {
           sku,

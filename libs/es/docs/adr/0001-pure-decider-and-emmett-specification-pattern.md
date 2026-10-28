@@ -23,7 +23,7 @@ Effect v4 lacks an active, idiomatic aggregate event-sourcing framework. Communi
 * **Zero-Infrastructure Domain Logic:** Aggregate deciders (`decide`) and state reducers (`evolve`) must require zero external services (`R = never`), allowing comprehensive BDD and property testing without mocks or emulators.
 * **Framework Boundary Isolation:** Framework packages (`@harness/es-contract`) must export only domain-agnostic event sourcing primitives (`EventMetadata`, `CommandResult`, `Decider`, `DeciderSpec`), keeping sample domain models (`Cart`, `Inventory`) isolated in test fixtures.
 * **Emmett-Style Given/When/Then DSL:** Developers must be able to specify aggregate behavior using partial event matching, typed failure assertion, and explicit no-op assertions (`[]`).
-* **Deterministic Verification:** Decider purity and error propagation must be statically enforceable by the harness graph linter (`checkEffectGraph`).
+* **Deterministic Verification:** Decider purity (`R = never`) and error propagation must be statically enforced by the TypeScript compiler (`tsc` / `@effect/tsgo`) and deterministic test runners, ensuring deciders remain dependency-free without runtime mocks.
 * **Closed Discriminated Unions:** States and command outcomes must be modeled with closed tagged unions (`CommandResult` = `Created` | `Appended`, `CartState` = `Empty` | `Open` | `CheckedOut`), never with boolean flags or optional properties.
 
 ## Considered Options
@@ -49,7 +49,7 @@ Effect v4 lacks an active, idiomatic aggregate event-sourcing framework. Communi
 ### 1 · Castore / Emmett Direct Adoption
 
 **Why rejected:**
-* **Castore:** Plain TypeScript event sourcing library that predates Effect v3/v4. While community adapters existed for Effect, it is not built natively on Effect v4's `Schema`, `TaggedErrorClass`, or Fiber tracing, requiring bridge layers and losing compile-time type inference.
+* **Castore:** Plain TypeScript event sourcing library that predates Effect v3/v4. While community adapters existed for Effect, it is not built natively on Effect v4's `Schema`, `Schema.TaggedError`, or Fiber tracing, requiring bridge layers and losing compile-time type inference.
 * **Emmett:** Oskar Dudycz's plain TypeScript event-sourcing library with EventStoreDB/PostgreSQL focus, released under Apache 2.0. Emmett provides an excellent programming model that inspired `DeciderSpec`, but is designed for plain TypeScript runtimes without native Effect v4 Fiber, Schema, or Layer dependency injection.
 
 ## Consequences and Enforcement
@@ -70,5 +70,5 @@ Effect v4 lacks an active, idiomatic aggregate event-sourcing framework. Communi
 | Rule | Enforced By | Gate / Mechanism | Governed Symbols |
 |---|---|---|---|
 | Decider purity (`R = never`) | `libs/es/contract/src/decider.ts` | TypeScript 7 & `@effect/tsgo` | `Decider.run` |
-| Framework boundary isolation | `libs/es/contract/src/index.ts` | `oxlint` & `pnpm run verify` | `libs/es/contract/src/index.ts` |
+| Framework boundary isolation | `libs/es/contract/src/index.ts` | Architecture lint & `pnpm run verify` | `libs/es/contract/src/index.ts` |
 | BDD test assertions | `libs/es/contract/src/decider.ts` | `@effect/vitest` | `Decider.run` |

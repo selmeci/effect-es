@@ -60,17 +60,24 @@ export const makeCommandResultSchema = <
     AppendedCommandResult(stateSchema, eventSchema)
   ])
 
-export type CommandResult<State, Event> =
-  | {
-      readonly _tag: "Created"
-      readonly newState: State
-      readonly appendedEvents: ReadonlyArray<Event>
-      readonly nextExpectedStreamVersion: number
-    }
-  | {
-      readonly _tag: "Appended"
-      readonly newState: State
-      readonly appendedEvents: ReadonlyArray<Event>
-      readonly nextExpectedStreamVersion: number
-    }
+export type CommandResult<
+  StateSchema extends Schema.Top,
+  EventSchema extends Schema.Top
+> = Schema.Schema.Type<
+  ReturnType<typeof makeCommandResultSchema<StateSchema, EventSchema>>
+>
+
+export type Created<State, Event> = {
+  readonly _tag: "Created"
+  readonly newState: State
+  readonly appendedEvents: readonly [Event, ...Array<Event>]
+  readonly nextExpectedStreamVersion: Schema.Schema.Type<typeof Schema.Natural>
+}
+
+export type Appended<State, Event> = {
+  readonly _tag: "Appended"
+  readonly newState: State
+  readonly appendedEvents: ReadonlyArray<Event>
+  readonly nextExpectedStreamVersion: Schema.Schema.Type<typeof Schema.Natural>
+}
 

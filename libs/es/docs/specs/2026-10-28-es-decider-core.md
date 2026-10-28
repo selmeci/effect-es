@@ -41,7 +41,7 @@ Requirements follow EARS syntax. Each requirement is a single sentence with bold
 | REQ-1.3 | Event-driven | **When** `DeciderSpec.for(decider).given(events).when(command)` is executed, the DeciderSpec runner **shall** verify emitted event partial matches via `thenEvents`. | DeciderSpec | UnitTest |
 | REQ-1.4 | Event-driven | **When** `DeciderSpec.for(decider).given(events).when(command)` is executed and the decider emits no events, the DeciderSpec runner **shall** verify the no-op state via `thenNothing`. | DeciderSpec | UnitTest |
 | REQ-1.5 | Event-driven | **When** `DeciderSpec.for(decider).given(events).when(command)` is executed and the decider fails, the DeciderSpec runner **shall** verify typed error tags via `thenFails` without infrastructure layers. | DeciderSpec | UnitTest |
-| REQ-1.6 | Event-driven | **When** `Decider.run` is executed with a decider, command, and prior state, the Decider.run function **shall** decide events and fold them into the next aggregate state with `R = never`. | Decider.run | UnitTest |
+| REQ-1.6 | Event-driven | **When** `Decider.run` is executed with a decider, command, and prior state, the Decider.run function **shall** decide events and sequentially fold all emitted events into the next aggregate state with `R = never`. | Decider.run | UnitTest |
 
 ## Assumptions
 

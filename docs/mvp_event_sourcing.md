@@ -21,14 +21,14 @@ Effect v4 has building blocks close to event sourcing, but none is a server-side
 | `effect/workflow` (core, unstable) | durable workflows with compensation, idempotency keys | process managers and sagas across aggregates |
 | `@codeforbreakfast/eventsourcing-*` | Effect-first aggregates, store, commands, protocol, transports, test contracts | peer `effect ^3.17`, last release 2025-12-11: not usable on v4, good API inspiration |
 | Castore | TypeScript ES framework: event stores, reducers, commands, message buses | not Effect, last release 2.4.2 (2025-04): wrapping it loses Schema, typed errors and Layers |
-| Emmett | Node.js ES framework: deciders, command handler, inline and async projections, consumers with checkpoints, workflows, BDD test specs; stores for PostgreSQL, SQLite, MongoDB, EventStoreDB | closest design to ours; not Effect and no license yet: our main source of patterns, see the next section |
+| Emmett | Node.js ES framework: deciders, command handler, inline and async projections, consumers with checkpoints, workflows, BDD test specs; stores for PostgreSQL, SQLite, MongoDB, EventStoreDB | closest design to ours; plain TypeScript (Apache 2.0): our main source of patterns, see the next section |
 | Decider pattern (fmodel-ts, Emmett) | `decide(command, state) → events`, `evolve(state, event) → state` | pure functions, ports to Effect without friction: our core |
 
 **Decision:** a thin own module on Effect Schema, deciders and Drizzle on Durable Object SQLite, borrowing Castore's vocabulary. No dependency on v3 libraries.
 
 ## Inspiration from Emmett
 
-Emmett (Oskar Dudycz) is the closest TypeScript match to our design: deciders, single-stream inline projections, multi-stream async projections and given/when/then testing. We borrow its patterns and API shapes, not its code: the repository has no license yet (an RFC proposes AGPLv3 and/or SSPL), so nothing is copied or depended on.
+Emmett (Oskar Dudycz) is the closest TypeScript match to our design: deciders, single-stream inline projections, multi-stream async projections and given/when/then testing. We borrow its patterns and API shapes, not its code: while Emmett is licensed under Apache 2.0, it targets plain TypeScript runtimes with EventStoreDB/PostgreSQL, so we implement idiomatic Effect v4 primitives with native Schemas and Fiber runtime.
 
 | Emmett idea | What we adopt | Where it lands |
 | --- | --- | --- |
@@ -44,7 +44,7 @@ Emmett (Oskar Dudycz) is the closest TypeScript match to our design: deciders, s
 | Schema versioning with upcast and downcast in the handler | upcasters as today; downcast only if an old consumer must read new events | event schema evolution |
 | Workflows: a decider over input commands and events that emits output messages, its stream holding inputs and outputs | post-MVP option for process managers: a workflow is itself a Durable Object aggregate, compared against `effect/workflow` | open questions |
 
-Not adopted: retries on expected-version conflicts (a Durable Object is the single writer, so conflicts cannot occur inside one aggregate) and Emmett's own event store packages (no license, and not Effect).
+Not adopted: retries on expected-version conflicts (a Durable Object is the single writer, so conflicts cannot occur inside one aggregate) and Emmett's own event store packages (designed for plain TypeScript, not Effect).
 
 ## Goals and non-goals
 
@@ -294,7 +294,7 @@ The largest risks are read load on a single-threaded aggregate, long streams wit
 - How long are events kept in the aggregate's own SQLite once archived? Local rebuilds need the full stream unless snapshots exist.
 - Should a hot aggregate's read model ever be served from a cache or a separate Durable Object, and what is the threshold?
 - Process manager choice (phase 5 brainstorming): workflow decider in a Durable Object, `effect/workflow` with an own Durable Object engine, or Cloudflare Workflows via Alchemy. Does `alchemy dev` emulate Cloudflare Workflows well enough for the timeout test?
-- Emmett's license: if it lands as AGPLv3 or SSPL, keep to patterns only; revisit if it becomes permissive.
+- Emmett's patterns: borrow design concepts while building native Effect v4 primitives.
 
 ## Sources
 
@@ -307,6 +307,6 @@ Checked 2026-10-04 against source code and package registries; Cloudflare platfo
 | Cloudflare Workflows in Alchemy: `Cloudflare.Workflow` class, `task` checkpointed steps replayed from the last completed step, `sleep`, `sleepUntil`, `waitForEvent` with timeout, step names are replay keys, tests start an instance and poll | [Alchemy Workflows](https://alchemy.run/cloudflare/compute/workflows), [Workflow reference](https://alchemy.run/providers/cloudflare/workflows/workflow) |
 | `@codeforbreakfast/eventsourcing-*`: Effect-first, peer `effect ^3.17`, last release 2025-12-11 | [eventsourcing-store](https://www.npmjs.com/package/@codeforbreakfast/eventsourcing-store), [eventsourcing-aggregates](https://www.npmjs.com/package/@codeforbreakfast/eventsourcing-aggregates) |
 | Castore: TypeScript ES framework, `@castore/core` 2.4.2 released 2025-04-18 | [castore](https://castore-dev.github.io/castore/) |
-| Emmett: deciders, command handler result fields, inline single-stream vs async multi-stream projections, consumers with checkpoints and `whenCaughtUp`, workflows, `DeciderSpecification` and `ApiSpecification`; no license yet (RFC for AGPLv3 and/or SSPL) | [emmett](https://github.com/event-driven-io/emmett), docs in the repo: command handler, projections, testing, workflows |
+| Emmett: deciders, command handler result fields, inline single-stream vs async multi-stream projections, consumers with checkpoints and `whenCaughtUp`, workflows, `DeciderSpecification` and `ApiSpecification`; Apache 2.0 | [emmett](https://github.com/event-driven-io/emmett), docs in the repo: command handler, projections, testing, workflows |
 | Decider pattern for TypeScript | [fmodel-ts](https://npmjs.com/package/@fraktalio/fmodel-ts), [event-driven.io](https://event-driven.io/en/type_script_node_js_event_sourcing/) |
 | `Drizzle.DurableObject` over `@effect/sql-sqlite-do`, migrations applied on activation, typed `EffectDrizzleQueryError` | [Alchemy Drizzle.DurableObject](https://alchemy.run/providers/drizzle/durableobject) |
