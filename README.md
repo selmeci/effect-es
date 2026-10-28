@@ -1,155 +1,337 @@
 # Effect-TS Engineering Harness
 
-The goal is a development harness in which an AI agent plans and codes in the idioms and building blocks of **Effect-TS v4**, enforced deterministically rather than merely suggested in a prompt. The repo runs on **pnpm + Nx**, a dual-layer Effect graph (**`effect/Graph`** in-memory + **Omnigraph `v0.14.0`** on local Lance storage in `.harness/omnigraph/`) indexes the type-checked `Effect<A, E, R>` / `Layer<ROut, E, RIn>` structure, runtime test spans, and pattern files, and a single resident **`clef-flash` (9B) decision model via Ollama** makes bounded local decisions. The harness is **agent-agnostic**: logic lives in the repo as Effect libraries, a CLI, and MCP tools. Each agent gets only a thin adapter. The first adapter prototype targets **Claude Code** (skill, `AGENTS.md`, hooks). The MVP is exercised on a small sample app whose cloud infrastructure is declared with **Alchemy v2**, an Effect-native infrastructure-as-code tool, so infrastructure follows the same idioms, gates, and traces as application code.
+An agentic software engineering harness built in **Effect v4 (`4.0.0-beta.48`)** and **Alchemy v2 (`2.0.0-beta.80`)** on **Cloudflare Workers / D1 / Durable Objects**.
 
-## Prerequisites
+The harness constrains coding agents with deterministic compiler, linter, property-graph, and ontology gates while routing idioms and architectural queries through an embedded structural index and an advisory local language model.
 
-- **Node.js**: `≥ 24.0.0`
-- **pnpm**: `12.9.1` (managed via `corepack enable`)
-- **`omnigraph` binary**: `v0.14.0` (single Rust binary on local Lance/Arrow storage in `.harness/omnigraph/` — zero Docker, zero Memgraph, zero Python)
-- **Ollama + `clef-flash` (9B)**: Single resident local decision model for semantic triage, guard, router, and per-step plan coverage (phase 2; no 27B model required)
-- **`oasdiff` binary**: `v1.33.0` for the OpenAPI breaking-change gate (phase 4)
-- **Cloudflare Account**: Required **only** when a human runs `alchemy dev` or `alchemy deploy`. Credentials must be configured via `alchemy profile edit --add Cloudflare`, which securely stores credentials in `~/.alchemy/profiles.json`. Never set `CLOUDFLARE_ACCOUNT_ID` or `CLOUDFLARE_API_TOKEN` environment variables and never use `.env` files.
+---
 
-## Setup
+## Core Design Principles
+
+1. **Deterministic Gates Always Win:** `@effect/tsgo` (`tsgo` + `@effect/language-service`), `oxlint` (20+ custom AST rules + Nx module boundary rules), Vitest, `GraphGc.decide`, `OntologyInvariants.decide`, and `SpanBudget.decide` hold absolute veto power. The local advisory model (`DecisionModel` / `clef-flash`) never overrides a deterministic check.
+2. **Plan-as-Code (`stub<A, E, R>()`):** Before writing implementation bodies, agents translate EARS requirements and ADR decisions into compilable TypeScript skeletons using `stub<A, E, R>(...args)` from `@harness/gates`. `harness plan-check` verifies that `A` (success), `E` (`Schema.TaggedErrorClass` union), and `R` (`Context.Service` capabilities) typecheck across the workspace before implementation begins.
+3. **ArchiMate 3.2 + Omnigraph Property Graph:** Requirements, ADRs, domain contracts, services, layers, handlers, and tests are indexed into a single property graph backed by `@modernrelay/omnigraph-core` (`v0.14.0` Rust NAPI + SQLite + `sqlite-vec`) and queried via declarative `.gq` pattern-matching queries.
+4. **Zero-Docker, Zero-Python Local Stack:** All parsing, AST extraction, graph traversal, and vector search run in-process on Node.js `>=24.10.0` via Rust NAPI addons (`oxc-parser`, `@ast-grep/napi`, `@modernrelay/omnigraph-core`, `sqlite-vec`).
+5. **Compounding Learnings Without Context Bloat:** Verification failures and route misses are recorded in `.harness/friction-log.jsonl` and `.harness/telemetry-log.jsonl`. Instead of appending prose rules to `AGENTS.md`, `harness learn` clusters recurring friction into executable `oxlint` rules, deterministic gate tests, or indexed `agent-patterns/*.md` recipes.
+
+---
+
+## Architecture & Monorepo Topology
+
+The harness is organized as an **Nx (`22.6.1`) + pnpm (`10.27.0`)** monorepo with strict 5-tier architectural boundaries enforced at lint time via `@nx/enforce-module-boundaries`:
+
+```mermaid
+flowchart TD
+  subgraph Adapters["Agent Adapters (Thin Wrappers)"]
+    AGY["Antigravity Plugin\nadapters/antigravity/plugins/effect-harness"]
+    CC["Claude Code Plugin\nadapters/claude-code/plugins/effect-harness"]
+  end
+
+  subgraph Apps["type:app — Entrypoints & Sample Stack"]
+    CLI["@harness/cli\napps/harness-cli"]
+    MCP["@harness/mcp\napps/harness-mcp"]
+    SAMPLE["@harness/sample\napps/sample (Alchemy + Workers + React)"]
+  end
+
+  subgraph Infra["type:infra — Live Layers & Native Bindings"]
+    GRAPH["@harness/graph\nOmnigraph v0.14.0 + .gq + ArchiMate 3.2"]
+    INGEST["@harness/ingest\nOxc + ast-grep + SQLite FTS5/sqlite-vec"]
+    CLEF["@harness/clef\nResident Ollama clef-flash JSON Schema"]
+    SAMPLE_INFRA["@harness/sample-infra\nDrizzle D1 + RpcSerialization.msgPack"]
+  end
+
+  subgraph Services["type:service — Context.Service Capabilities"]
+    DECISION["@harness/decision\nDecisionModel + 6 Versioned Schemas"]
+    SAMPLE_SVC["@harness/sample-service\nItemRepo Service"]
+  end
+
+  subgraph Domain["type:domain — Pure Deciders (R = never)"]
+    GATES["@harness/gates\n11 Pure Deciders + stub<A,E,R>()"]
+    SAMPLE_DOM["@harness/sample-domain\nCreateItem / ListItems"]
+  end
+
+  subgraph Contracts["type:contract — Boundary Schemas & Errors"]
+    SAMPLE_CON["@harness/sample-contract\nItem Schemas + ItemRpcGroup"]
+  end
+
+  Adapters --> CLI
+  Adapters --> MCP
+  CLI --> GRAPH & INGEST & CLEF & DECISION & GATES
+  MCP --> GRAPH & INGEST & CLEF & DECISION & GATES
+  GRAPH --> GATES
+  INGEST --> GATES
+  CLEF --> DECISION & GATES
+  DECISION --> GATES
+  SAMPLE --> SAMPLE_INFRA & SAMPLE_DOM & SAMPLE_CON
+  SAMPLE_INFRA --> SAMPLE_SVC & SAMPLE_CON
+  SAMPLE_DOM --> SAMPLE_SVC & SAMPLE_CON & GATES
+  SAMPLE_SVC --> SAMPLE_CON
+```
+
+### Nx Dependency Taxonomy
+
+| Nx Tag | Allowed Dependencies | Responsibilities | Packages |
+| :--- | :--- | :--- | :--- |
+| `type:contract` | `type:contract` (`effect` only) | Shared `Schema.Class`, `Schema.TaggedErrorClass`, `HttpApi`, `RpcGroup` | `@harness/sample-contract` (`libs/sample/contract`), `@harness/<scope>-contract` |
+| `type:service` | `type:contract`, `type:service` | `Context.Service` capability interfaces (repositories, gateways, model ports) | `@harness/decision` (`libs/harness/decision`), `@harness/sample-service` (`libs/sample/service`) |
+| `type:domain` | `type:contract`, `type:service`, `type:domain` | Pure business logic and `R = never` deciders; zero I/O, zero `Layer` construction | `@harness/gates` (`libs/harness/gates`), `@harness/sample-domain` (`libs/sample/domain`) |
+| `type:infra` | `type:contract`, `type:service`, `type:domain`, `type:infra` | Live `Layer` implementations, Drizzle D1 repositories, Omnigraph, SQLite, Ollama HTTP | `@harness/clef` (`libs/harness/clef`), `@harness/ingest` (`libs/harness/ingest`), `@harness/graph` (`libs/harness/graph`), `@harness/sample-infra` (`libs/sample/infra`) |
+| `type:app` | All tiers | Composition root (`Layer.provideMerge`), CLI/MCP servers, Alchemy `alchemy.run.ts`, web UI | `@harness/cli` (`apps/harness-cli`), `@harness/mcp` (`apps/harness-mcp`), `@harness/sample` (`apps/sample`) |
+
+---
+
+## The 7-Step Gated Task Lifecycle
+
+Every feature or bugfix follows a deterministic 7-step lifecycle:
+
+```mermaid
+flowchart LR
+  S1["1. EARS Spec & ADR\ndocs/specs + docs/adr"] --> S2["2. Plan-as-Code\nstub<A, E, R>()"]
+  S2 --> S3["3. harness plan-check\nHARNESS_PLAN_CHECK=1"]
+  S3 --> S4["4. Implement & Test\nEffect.fn + Layer.mock"]
+  S4 --> S5["5. Zero-Entropy Gates\nharness gc / ontology / mutate"]
+  S5 --> S6["6. harness verify & done\n.harness/verify-stamp.json"]
+  S6 --> S7["7. harness report & learn\nSession Grade + Gate Promotion"]
+```
+
+1. **EARS Specification & ADR (`specifying-ears-with-effect`):**
+   Author or update requirements in `docs/specs/<id>.md` using EARS syntax (`WHEN`, `IF/THEN`, `WHILE`, `WHERE`) and architectural decisions in `docs/adr/<id>.md` with YAML frontmatter linking `realizes` / `influences`. Validated by `EarsSpecLint.decide` and `AdrDocLint.decide`.
+2. **Plan-as-Code Skeleton (`planning-effect-skeletons`):**
+   Map EARS clauses directly to Effect v4 types:
+   - `WHEN <trigger>` $\rightarrow$ boundary `Schema.Class` input & success type `A`
+   - `IF <condition> THEN <outcome>` $\rightarrow$ `Schema.TaggedErrorClass` in error channel `E`
+   - `WHILE <state>` $\rightarrow$ pure `decide(state, input)` function with `R = never` + stateful `Context.Service` in `R`
+   - `WHERE <feature>` $\rightarrow$ `Layer` / `Config` dependency in `R`
+   Write function signatures returning `stub<A, E, R>(...args)` from `@harness/gates` and add `@harness-Requirement: REQ-...` JSDoc tags.
+3. **Plan Gate (`harness plan-check`):**
+   Runs `HARNESS_PLAN_CHECK=1 tsgo -b --noEmit` + `oxlint` (allowing `stub()` calls) + `PlanStepCoverageV1`. Checkpoints the verified skeleton onto `plan/<task>`.
+4. **Implementation (`executing-effect-stubs`):**
+   Replace `stub<A, E, R>()` bodies with production `Effect.fn("Domain.operation")` implementations, live Layers, and Vitest tests using `@effect/vitest` (`it.effect`, `TestClock`, `Layer.mock`). Concurrent subagents isolate work via `Workspace: "share"` or `HARNESS_WORKTREE_ID=<id>`.
+5. **Zero-Entropy, Ontology & Mutation Gates (`harness gc`, `harness ontology`, `harness mutate`):**
+   - `harness gc --strict`: Checks `GraphGc.decide` for orphan symbols, dead exports, and unreferenced files.
+   - `harness ontology --action=check`: Verifies all 5 ArchiMate 3.2 cross-layer traceability invariants (`OntologyInvariants.decide`) and optionally checks semantic drift via `OntologyConflictV1` (`--with-clef`).
+   - `harness mutate`: Checks test killer ratios against modified pure domain deciders (`MutationCheck.decide`).
+6. **Sanctioned Verification & Completion (`harness verify` $\rightarrow$ `harness done`):**
+   - `CI=true harness verify` runs `nx affected -t verify` (`tsgo -b` with `@effect/language-service` strict errors + `oxlint` banning `stub()` and `@effect-diagnostics` suppressions + Vitest), checks `SpanBudget.decide` and `MigrationSafety.decide`, checkpoints `impl/<task>`, and writes `.harness/verify-stamp.json` bound to `git rev-parse HEAD` + working-tree diff hash.
+   - `harness done` verifies the stamp matches the current tree before allowing the agent or human to conclude the task.
+7. **Observability & Compounding Learnings (`harness report` & `harness learn`):**
+   - `harness report` evaluates `.harness/telemetry-log.jsonl` via `SessionReport.decide`, computing a session health score (`0–100`, grade `A–D`) and writing `.harness/session-report.md`.
+   - `harness learn` clusters `.harness/friction-log.jsonl` via `Friction.decide` + `LearnProposalV1` to promote recurring mistakes into new `oxlint` rules or `agent-patterns/*.md` recipes.
+
+---
+
+## ArchiMate 3.2 Ontology & Omnigraph `.gq` Engine
+
+`@harness/graph` (`libs/harness/graph`) layers an **ArchiMate 3.2** metamodel on top of `@modernrelay/omnigraph-core` (`v0.14.0`):
+
+| ArchiMate 3.2 Layer | Node Kinds | Source Artifacts | Outgoing Traceability Edges |
+| :--- | :--- | :--- | :--- |
+| **Motivation** | `Requirement`, `Principle`, `Constraint`, `Goal`, `Outcome` | `docs/specs/*.md` (EARS clauses + frontmatter), `docs/adr/*.md` | `INFLUENCES` |
+| **Business** | `BusinessProcess`, `BusinessObject`, `Contract` | `type:contract` `Schema.Class`, `Schema.TaggedErrorClass`, `RpcGroup` | `REALIZES` ($\rightarrow$ Motivation) |
+| **Application** | `ApplicationService`, `ApplicationComponent`, `ApplicationFunction` | `type:service` `Context.Service`, `type:domain` `Effect.fn` / `.decide` | `REALIZES` ($\rightarrow$ Motivation / Business), `SERVES`, `ACCESSES` |
+| **Technology** | `SystemSoftware`, `Artifact`, `Node` | `type:infra` `Layer`, Drizzle repositories, Alchemy resources | `REALIZES` ($\rightarrow$ ApplicationService), `ASSIGNED_TO` |
+| **Implementation** | `WorkPackage`, `Deliverable` | Vitest `it.effect` tests, migration SQL files | `TESTS` ($\rightarrow$ Application / Business), `ASSOCIATED_WITH` |
+
+### Cross-Layer Invariants (`OntologyInvariants.decide`)
+
+1. **Unrealized Requirements:** Every EARS `Requirement` node in `docs/specs/*.md` must have at least one incoming `REALIZES` edge from an `ApplicationFunction`, `ApplicationService`, or `Contract`.
+2. **Untested Requirements:** Every `Requirement` must be transitively covered by a test (`Implementation -[TESTS]-> Application -[REALIZES]-> Requirement`).
+3. **Orphan Domain Functions:** Every exported use-case in `type:domain` must carry an `@harness-Requirement: REQ-...` JSDoc tag or link to a realized contract/service.
+4. **Unprovided Services:** Every `Context.Service` (`ApplicationService`) must have at least one providing `Layer` (`SystemSoftware`) via `REALIZES`.
+5. **Forbidden Cross-Layer Shortcuts:** `Technology` nodes cannot bypass `ApplicationService` interfaces, and `Application` domain nodes cannot depend on `Technology` nodes.
+
+### Declarative `.gq` Queries (`libs/harness/graph/queries/harness.gq`)
+
+Agents and gates query the property graph using Omnigraph's `.gq` language via `harness ontology --action=gq --query-name=<name>` or the `harness_gq_query` MCP tool:
+- `unrealized_requirements`
+- `requirement_realization_chain`
+- `service_layer_providers`
+- `layer_composition_dag`
+- `test_coverage_chain`
+- `adr_influenced_code`
+- `domain_infra_violations`
+
+---
+
+## Deterministic Gates & Advisory Schemas
+
+### 11 Pure Domain Deciders (`@harness/gates`, `R = never`)
+
+| Decider | File | Purpose |
+| :--- | :--- | :--- |
+| `GraphGc.decide` | `libs/harness/gates/src/graph-gc.ts` | Flags dead exports, orphan files, and unused symbols (`error` in `--strict` mode). |
+| `SpanBudget.decide` | `libs/harness/gates/src/span-budget.ts` | Enforces CPU/latency budgets on traced `Effect.fn` spans (`CpuBudgetExceeded`, `D1QueryLimitExceeded`). |
+| `MigrationSafety.decide` | `libs/harness/gates/src/migration-safety.ts` | Blocks destructive SQL (`DROP TABLE`, `DROP COLUMN`, table rebuilds) without human escalation. |
+| `MutationCheck.decide` | `libs/harness/gates/src/mutation-check.ts` | Enforces minimum mutation score (`>= 0.80`) on pure domain logic. |
+| `LoopCircuitBreaker.decide` | `libs/harness/gates/src/loop-circuit-breaker.ts` | Trips after 3 consecutive identical verification failures or edits to force re-planning/triage. |
+| `EarsSpecLint.decide` | `libs/harness/gates/src/ears-spec-lint.ts` | Validates EARS requirement documents (`WHEN`, `IF/THEN`, `WHILE`, `WHERE`, frontmatter IDs). |
+| `AdrDocLint.decide` | `libs/harness/gates/src/adr-doc-lint.ts` | Validates ADR frontmatter (`id`, `status`, `realizes`, `influences`) and required sections. |
+| `OntologyInvariants.decide` | `libs/harness/gates/src/ontology-invariants.ts` | Enforces all 5 ArchiMate 3.2 cross-layer traceability invariants. |
+| `SessionHandoff.decide` | `libs/harness/gates/src/session-handoff.ts` | Computes session resume state, dirty worktree status, and verify stamp freshness. |
+| `Friction.decide` | `libs/harness/gates/src/friction.ts` | Clusters `.harness/friction-log.jsonl` events by root cause (`>= 2` occurrences) for `harness learn`. |
+| `SessionReport.decide` | `libs/harness/gates/src/session-report.ts` | Computes session health score (`0–100`), letter grade (`A–D`), gate pass rates, and recommendations. |
+
+### 6 Versioned `DecisionModel` Schemas (`@harness/decision` + `@harness/clef`)
+
+Backed by resident Ollama (`clef-flash` with `keep_alive: -1` and strict JSON Schema decoding; deterministic fallback layer when Ollama is offline):
+
+| Schema | Used By | Purpose |
+| :--- | :--- | :--- |
+| `IdiomRouterV1` | `harness route`, `harness_route` | Reranks top-K FTS5 / `sqlite-vec` chunks from `repos/effect`, `repos/alchemy`, and `agent-patterns/*.md`. |
+| `GuardV1` | `harness guard` | Classifies ambiguous shell commands when deterministic regex/path guards return `ask`. |
+| `TriageV1` | `harness verify` | Summarizes compiler/test failures and identifies the minimal causal locus when verification fails. |
+| `PlanStepCoverageV1` | `harness plan-check` | Audits whether `stub<A, E, R>()` signatures cover all EARS clauses in the plan. |
+| `LearnProposalV1` | `harness learn` | Drafts `oxlint` AST rule specifications or `agent-patterns/*.md` recipes from friction clusters. |
+| `OntologyConflictV1` | `harness ontology --with-clef` | Detects semantic contradictions between EARS requirements/ADRs and implementing `Effect.fn` / `Layer` signatures. |
+
+---
+
+## Static Analysis & Effect Language Service (`@effect/tsgo`)
+
+Every typecheck (`pnpm typecheck` / `harness verify`) runs `tsgo -b` patched with `@effect/language-service` (`v0.80.0`), enforcing strict compile-time errors (`tsconfig.base.json`):
+
+- `floatingEffect: "error"` — every `Effect` must be yielded (`yield*`), returned, or explicitly run.
+- `missingEffectContext: "error"` & `missingEffectError: "error"` — unhandled `R` or `E` channels fail compilation.
+- `missingStarInYieldEffect: "error"` — `yield` instead of `yield*` inside `Effect.gen` / `Effect.fn` is a compile error.
+- `returnEffectInGen: "error"`, `tryCatchInEffectGen: "error"`, `unnecessaryEffectGen: "error"`, `scopeInLayerEffect: "error"`, `layerMergeAllWithDependencies: "error"`.
+
+In addition, `tools/oxlint/syntax-bans.js` enforces 20+ Effect v4, Alchemy v2, and Drizzle AST rules, including:
+- `effect-harness/no-effect-diagnostics-suppression` — bans `// @effect-diagnostics` and `/* @effect-diagnostics */` comments so agents cannot silence `@effect/tsgo`.
+- `effect-harness/no-stub-outside-plan-check` — bans `stub()` unless `HARNESS_PLAN_CHECK=1` is set.
+- `effect-harness/no-gen-wrapper` — requires `Effect.fn("SpanName")` or `Effect.fnUntraced` instead of `(...args) => Effect.gen(...)`.
+- `effect-harness/no-run-sync-outside-app`, `effect-harness/no-layer-in-domain`, `effect-harness/no-drizzle-outside-infra`, `effect-harness/no-alchemy-outside-infra`, `effect-harness/no-repos-import`.
+
+---
+
+## CLI & MCP Server Reference
+
+### `harness` CLI (`apps/harness-cli`)
+
+Invoke via `node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts <subcommand>`:
+
+| Subcommand | Description |
+| :--- | :--- |
+| `doctor` | Checks Node `>=24.10.0`, `@effect/tsgo` (`effectLspOk`), Omnigraph NAPI, SQLite index, and Ollama `clef-flash` status. |
+| `session` | Prints session resume handoff (`SessionHandoff.decide`), active branch, verify stamp freshness, and environment health. |
+| `ingest` | Incrementally indexes `repos/effect`, `repos/alchemy`, `agent-patterns/*.md`, `docs/specs/*.md`, `docs/adr/*.md`, and workspace TypeScript symbols into `.harness/index.sqlite` and Omnigraph. |
+| `route --query="..."` | Queries the structural FTS5 + `sqlite-vec` index and reranks results via `IdiomRouterV1`. |
+| `guard --format=antigravity\|claude` | Evaluates `PreToolUse` shell commands and file edits against `repos/` read-only rules, destructive SQL, and `alchemy deploy`/`destroy` guards. |
+| `plan-check` | Runs `HARNESS_PLAN_CHECK=1` typecheck + `oxlint` + `PlanStepCoverageV1` and checkpoints `plan/<task>`. |
+| `gc [--strict]` | Runs `GraphGc.decide` over the Omnigraph symbol graph to detect dead exports and orphan files. |
+| `ontology --action=check\|why\|impact\|gq` | Runs ArchiMate 3.2 cross-layer invariant checks (`--with-clef` for semantic drift), traces `why` a symbol exists, computes `impact` blast radius, or executes named `.gq` queries. |
+| `mutate [--score=0.85]` | Evaluates mutation score thresholds (`MutationCheck.decide`) on pure domain logic. |
+| `verify` | Runs `CI=true pnpm nx affected -t verify`, `SpanBudget.decide`, `MigrationSafety.decide`, checkpoints `impl/<task>`, and writes `.harness/verify-stamp.json`. |
+| `done --format=antigravity\|claude` | Verifies `.harness/verify-stamp.json` matches `HEAD` and current working tree hash before allowing task completion. |
+| `report` | Generates `.harness/session-report.md` from `.harness/telemetry-log.jsonl` with session health score (`0–100`, grade `A–D`). |
+| `learn` | Clusters `.harness/friction-log.jsonl` via `Friction.decide` + `LearnProposalV1` to promote recurring issues into gates/recipes. |
+
+### `harness-mcp` Server (`apps/harness-mcp`)
+
+Exposes 12 structural, ontology, diagnostics, and telemetry MCP tools over stdio:
+
+| MCP Tool | Arguments | Description |
+| :--- | :--- | :--- |
+| `harness_resolve` | `{ query, limit? }` | Resolves symbol definitions (`Service`, `Layer`, `Schema`, `TaggedError`, `EffectFn`, `Requirement`, `ADR`) by name or prefix. |
+| `harness_callers` | `{ symbolId }` | Lists incoming edges (`CALLS`, `PROVIDES`, `REQUIRES`, `TESTS`, `REALIZES`) for a symbol. |
+| `harness_callees` | `{ symbolId }` | Lists outgoing edges from a symbol. |
+| `harness_tests_reaching` | `{ symbolIds }` | Finds the minimal set of Vitest test files transitively reaching the given symbol IDs. |
+| `harness_structural_search` | `{ pattern, path? }` | Runs `@ast-grep/napi` structural AST pattern searches across TypeScript files. |
+| `harness_route` | `{ query, topK? }` | Queries the hybrid FTS5 + `sqlite-vec` idiom router across Effect/Alchemy docs and `agent-patterns/*.md`. |
+| `harness_ontology_why` | `{ symbol }` | Traces a symbol upward through ArchiMate 3.2 layers to the EARS `Requirement` and `ADR` nodes it realizes. |
+| `harness_ontology_impact` | `{ nodeId }` | Computes downstream blast radius across contracts, domain functions, services, layers, and tests when a requirement or symbol changes. |
+| `harness_ontology_check` | `{}` | Runs `OntologyInvariants.decide` across the workspace and returns any cross-layer violations. |
+| `harness_gq_query` | `{ queryName?, querySource? }` | Executes a named query from `libs/harness/graph/queries/harness.gq` or an inline `.gq` query against Omnigraph. |
+| `harness_lsp_diagnostics` | `{ project? }` | Runs `@effect/tsgo` (`tsgo -b --noEmit`) and returns structured diagnostics (including `@effect/language-service` errors) with file, line, column, and code. |
+| `harness_telemetry_report` | `{ writeReport? }` | Computes the current session health report (`SessionReport.decide`) from `.harness/telemetry-log.jsonl`. |
+
+---
+
+## Agent Adapters (Antigravity & Claude Code)
+
+Both `adapters/antigravity/plugins/effect-harness` and `adapters/claude-code/plugins/effect-harness` ship with identical capabilities wired to the same `harness` CLI and `harness-mcp` server:
+
+### 5 Workflow Skills
+- `effect-harness`: Top-level orchestrator for the 7-step lifecycle, MCP tools, and Effect v4 / Alchemy v2 idioms.
+- `specifying-ears-with-effect`: Guides EARS requirement authoring (`docs/specs/*.md`) and ADR linkage (`docs/adr/*.md`).
+- `planning-effect-skeletons`: Translates EARS clauses into compilable `stub<A, E, R>()` skeletons and runs `harness plan-check`.
+- `executing-effect-stubs`: Replaces `stub<A, E, R>()` with `Effect.fn` implementations, Layers, and `@effect/vitest` tests.
+- `compounding-effect-learnings`: Runs `harness report` and `harness learn` to promote friction clusters into deterministic gates.
+
+### 4 Specialist Review Subagents
+- `effect-ears-test-reviewer`: Audits EARS clause-to-test traceability (`WHEN`/`IF-THEN`/`WHILE`/`WHERE`) and checks for vacuous assertions.
+- `effect-security-reviewer`: Audits trust boundaries, `Schema.decodeUnknownEffect` ingress validation, SQL injection safety, and secret handling (`Redacted`).
+- `effect-reliability-reviewer`: Audits fiber concurrency, `Scope` finalizer safety, `Schedule` backoff bounds, and resource leaks.
+- `effect-adversarial-reviewer`: Attempts to break pure deciders and boundary schemas with boundary values, malformed payloads, and race conditions.
+
+---
+
+## Prerequisites & Quickstart
+
+### Prerequisites
+- **Node.js `>=24.10.0`** and **pnpm `10.27.0`**
+- **Ollama** (optional, recommended for advisory `DecisionModel`):
+  ```bash
+  ollama create clef-flash -f tools/clef/Modelfile
+  ```
+
+### Installation & Index Bootstrap
 
 ```bash
-corepack enable
+# 1. Install dependencies (automatically runs `effect-tsgo patch --typescript --oxlint`)
 pnpm install
+
+# 2. Check environment health (Node, @effect/tsgo LSP, Omnigraph NAPI, SQLite, Ollama)
+node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts doctor
+
+# 3. Build the structural & ontology index (.harness/index.sqlite + Omnigraph)
+node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts ingest
+
+# 4. Run full workspace verification
+CI=true node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts verify
 ```
 
-The repository's `prepare` script (`effect-tsgo patch --typescript --oxlint`) automatically patches TypeScript (native TypeScript-Go compiler with Effect diagnostics) and oxlint upon installation.
+---
 
-## Gates & Definition of Done
+## Using as a Template & Bidirectional `upstream` Sync
 
-Every change in the harness must pass deterministic gates before completion. Deterministic gates always win; the decision model never overrides them.
+[`selmeci/effect-ts-harness`](https://github.com/selmeci/effect-ts-harness) is configured as a GitHub Template Repository (`is_template: true`). Its Node TS resolver (`tools/node-ts-resolver.mjs`) and Omnigraph extractor (`libs/harness/graph/src/type-extractor.ts`) dynamically resolve any `@harness/<scope>-<tier>` package added under `libs/<scope>/<tier>`.
 
-| Gate | What it catches / Enforces | How it runs |
-| --- | --- | --- |
-| `typecheck` | Floating Effects, Layer requirement leaks, invalid types (including `stub<A, E, R>` skeletons) | `@effect/tsgo` (`tsc --noEmit && effect-tsgo diagnostics --strict`) per project |
-| `lint` | Oxlint rules, Effect plugin diagnostics, `@nx/enforce-module-boundaries`, custom syntax bans (`async`/`await`, `try`/`catch`, `throw`, `new Promise`, raw `JSON.parse`, `@effect-diagnostics`, and `stub()` in `verify`), and import bans (`drizzle-orm/*`, `alchemy/*`, `@effect/sql-*`) | `oxlint --deny-warnings .` per project |
-| `test` | Unit, property-based (`FastCheck`), and trace-budget test assertions | `@effect/vitest` / Vitest per project |
-| `gc` | Zero-entropy graph & governance check (`GraphGc.decide`, `EarsSpecLint.decide`, `AdrDocLint.decide`, `OntologyInvariants.decide`) | `harness gc --strict` |
-| `ontology` | Cross-layer ArchiMate 3.2 invariants + Clef semantic conflict detection (`OntologyConflictV1`) | `harness ontology check --strict` |
-| `mutate` | AST mutation testing on pure domain deciders (`MutationCheck.decide`, 100% kill score) | `harness mutate --strict` |
-| `migration:check` | Drizzle v1 (`1.0.0-rc.5-ab785fc`) schema drift against committed migrations; destructive SQL (`DROP`) escalation | `node scripts/check-migrations.mjs` in infra libraries |
-| `verify` | Composite target checking all project gates and writing `.harness/verify-stamp.json` | `harness verify` / `nx affected -t verify` / `pnpm verify:all` |
+> [!IMPORTANT]
+> Clicking **"Use this template"** in the GitHub UI creates a repository with a squashed initial commit and **no shared Git commit history**, which causes `unrelated histories` conflicts when syncing future harness upgrades.
+> To keep **bidirectional Git sync (`upstream`)** working cleanly, initialize new project repositories by cloning and pushing the `main` history directly.
 
-**Definition of Done:** `nx affected -t verify` is green across all affected projects.
-
-To verify all projects across the workspace:
-```bash
-pnpm verify:all
-```
-
-## Skeleton Planning with `stub<A, E, R>`
-
-During the Plan phase, use-case skeletons use `stub<A, E, R>(...args)` from `@harness/gates`:
-
-```ts
-export const checkout = Effect.fn("Cart.checkout")(function* (input: CheckoutInput) {
-  return yield* stub<CheckoutReceipt, OutOfStockError | PaymentError, InventoryRepo | PaymentService>(input)
-})
-```
-
-- During `HARNESS_PLAN_CHECK=1` (`harness plan-check`), `stub<A, E, R>` is allowed and preserves exact inferred `A`, `E`, and `R` channels.
-- During `harness verify` / `pnpm verify:all`, `stub(...)` is banned by `harness/syntax-bans`.
-
-## Infrastructure (Alchemy v2)
-
-- The sample application (`apps/sample/alchemy.run.ts`) declares cloud infrastructure using Alchemy v2 (`2.0.0-beta.80`), and its configuration typechecks in every `verify` run.
-- `alchemy` and `alchemy/*` imports are banned outside `type:infra` libraries and `apps/sample`.
-- `alchemy deploy`, `alchemy destroy`, and `alchemy profile` are **human-only** commands (`ask` verdict in the guard).
-- Alchemy documentation snapshots are vendored locally in `docs/alchemy-llms.txt` (index) and `docs/alchemy-llms-full.txt` (per-resource reference). Search these local files directly; do not fetch live documentation.
-
-## Data Layer (Drizzle on D1 / Durable Objects)
-
-- Table schemas (`sqliteTable`) and `drizzle-orm` (`1.0.0-rc.5-ab785fc`) / `@effect/sql-*` imports are strictly confined to `type:infra` libraries. Repositories decode database rows into contract Schemas so that Drizzle types never reach the domain or frontend.
-- Migrations are generated by hand with `drizzle-kit generate` and committed to version control (`migrations/<timestamp>_<name>/migration.sql` + `snapshot.json`).
-- Running `verify` checks schema drift via `migration:check` and fails (exit 1) if uncommitted schema changes exist. Any migration containing destructive SQL (`DROP` or table rebuilds) escalates to a human operator (exit 2).
-
-## Repository Layout
-
-```
-libs/harness/
-  decision/          DecisionModel definitions over effect/ai + @effect/ai-typesafe (resident clef-flash)
-  ingest/            Effect.fn static index, recording tracer with root TestSpan, workerd trace correlation
-  graph/             effect/Graph builder, ArchiMate 3.2 ontology, schema.pg, queries/harness.gq, @modernrelay/omnigraph sync
-  gates/             stub<A, E, R> helper, guard policy, EARS/ADR/Ontology gates, mutation testing, session telemetry & report
-libs/sample/
-  contract/          shared Schemas, HttpApi, RpcGroup, API errors (type:contract)
-  domain/            use cases and pure domain logic, no I/O (type:domain)
-  infra/             live Layer implementations, Drizzle repositories, migrations (type:infra)
-apps/sample/         sample app using Alchemy v2 for Cloudflare infrastructure (type:app)
-apps/harness-cli/    harness guard | route | plan-check | verify | done | learn | gc | mutate | ontology | report | ingest | session | doctor
-apps/harness-mcp/    Effect MCP server (harness_route, harness_resolve, harness_callers, harness_callees, harness_tests_reaching, harness_structural_search, harness_ontology_why, harness_ontology_impact, harness_ontology_check, harness_gq_query, harness_lsp_diagnostics, harness_telemetry_report)
-adapters/
-  antigravity/       plugin: hooks.yaml -> harness-cli, mcp_config.json -> harness-mcp + @modernrelay/omnigraph-mcp + nx-mcp, 4 skills
-  claude-code/       plugin: hooks.json -> harness-cli, .mcp.json -> harness-mcp + @modernrelay/omnigraph-mcp + nx-mcp, 4 skills
-repos/effect/        squashed subtree, read-only
-repos/alchemy/       squashed subtree, read-only
-agent-patterns/      reviewed pattern files (also indexed as PatternDoc nodes in Omnigraph)
-AGENTS.md            agent-neutral rules
-```
-
-## Using as a Template & Bidirectional Upstream Sync (`upstream`)
-
-> **Important:** Avoid creating downstream projects via the GitHub UI *"Use this template"* button if you plan to sync harness improvements back and forth. GitHub's template generator squashes history into a new orphan commit with a different SHA, which causes `fatal: refusing to merge unrelated histories` on `git merge` / `git pull`.
-
-To create a new downstream repository (such as [`selmeci/effect-es`](https://github.com/selmeci/effect-es)) that preserves **shared Git commit history** with [`selmeci/effect-ts-harness`](https://github.com/selmeci/effect-ts-harness):
-
-### 1. Bootstrapping a New Project with Shared History
+### 1. Creating a New Project Repository with Shared History
 
 ```bash
-# Create an empty repository on GitHub (without --template squash)
-gh repo create selmeci/<new-project> --public
+# 1. Create an empty repository on GitHub (without README or initial commit)
+gh repo create <owner>/<new-project> --public
 
-# Push the clean main branch from effect-ts-harness
-git push git@github.com:selmeci/<new-project>.git main:main
+# 2. Clone effect-ts-harness and rename the remote to `upstream`
+git clone git@github.com:selmeci/effect-ts-harness.git <new-project>
+cd <new-project>
+git remote rename origin upstream
+git remote add origin git@github.com:<owner>/<new-project>.git
 
-# Clone the new project and register effect-ts-harness as upstream
-git clone git@github.com:selmeci/<new-project>.git ~/WebstormProjects/<new-project>
-cd ~/WebstormProjects/<new-project>
-git remote add upstream git@github.com:selmeci/effect-ts-harness.git
-git fetch upstream
+# 3. Push the shared `main` baseline to `origin`
+git push -u origin main
 ```
 
-### 2. Pulling Harness Updates into a Downstream Project (`upstream -> origin`)
-
-Whenever new gates, ontology rules, or skills are added to `selmeci/effect-ts-harness`:
+### 2. Pulling Harness Upgrades into a Project (`upstream` $\rightarrow$ `origin`)
 
 ```bash
 git fetch upstream
+git checkout main
 git merge upstream/main
+git push origin main
 ```
 
-Because both repositories share the same ancestor commits on `main`, Git performs a clean 3-way merge across `libs/harness/*`, `apps/harness-*`, `agent-patterns/*`, `adapters/*`, and `tools/*` without touching your domain packages (`libs/<scope>/*`).
+### 3. Upstream-Contributing Improvements Back to the Harness (`origin` $\rightarrow$ `upstream`)
 
-### 3. Upstreaming Harness Improvements from a Downstream Project (`origin -> upstream`)
+Keep commits that touch harness infrastructure (`apps/harness-*`, `libs/harness/*`, `tools/*`, `adapters/*`, `agent-patterns/*`) separate from domain commits (`libs/<your-domain>/*`, `docs/specs/*`), then cherry-pick them back to `upstream`:
 
-When you improve the harness while working in a downstream project (e.g., `selmeci/effect-es`):
-
-1. **Option A — Cherry-pick a dedicated harness commit:**
-   Commit your harness changes (`libs/harness/*`, `apps/harness-*`, `agent-patterns/*`, `adapters/*`, `tools/*`) in a separate commit, then cherry-pick it onto `upstream/main`:
-   ```bash
-   git fetch upstream
-   git checkout -b feat/harness-upgrade upstream/main
-   git cherry-pick <commit-sha>
-   git push upstream feat/harness-upgrade:main
-   ```
-
-2. **Option B — Extract harness paths directly onto `upstream/main`:**
-   If harness edits were mixed with domain commits on a feature branch (e.g., `feat/es-phase-1-decider-core`):
-   ```bash
-   git fetch upstream
-   git checkout -b feat/harness-upgrade upstream/main
-   git checkout <feature-branch> -- libs/harness apps/harness-cli apps/harness-mcp agent-patterns adapters tools
-   git commit -m "feat(harness): upstream harness improvements"
-   git push upstream feat/harness-upgrade:main
-   ```
-
-## Documentation & References
-
-- [AGENTS.md](AGENTS.md): Order of authority, planning idioms, coding standards, and boundary rules for agents.
-- [docs/mvp_v2.md](docs/mvp_v2.md): Full MVP v2 architectural specification, empirical audit findings, acceptance criteria, and phase roadmap (supersedes [docs/mvp.md](docs/mvp.md)).
-
+```bash
+git fetch upstream
+git checkout -b fix/harness-improvement upstream/main
+git cherry-pick <commit-sha>
+git push upstream fix/harness-improvement
+```
