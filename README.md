@@ -18,7 +18,7 @@ corepack enable
 pnpm install
 ```
 
-The repository's `prepare` script (`effect-tsgo patch --oxlint`) automatically patches TypeScript (native TypeScript-Go compiler with Effect diagnostics) and oxlint upon installation.
+The repository's `prepare` script (`effect-tsgo patch --typescript --oxlint`) automatically patches TypeScript (native TypeScript-Go compiler with Effect diagnostics) and oxlint upon installation.
 
 ## Gates & Definition of Done
 
@@ -26,11 +26,14 @@ Every change in the harness must pass deterministic gates before completion. Det
 
 | Gate | What it catches / Enforces | How it runs |
 | --- | --- | --- |
-| `typecheck` | Floating Effects, Layer requirement leaks, invalid types (including `stub<A, E, R>` skeletons) | `@effect/tsgo` (`tsc --noEmit`) per project |
-| `lint` | Oxlint rules, Effect plugin diagnostics, `@nx/enforce-module-boundaries`, custom syntax bans (`async`/`await`, `try`/`catch`, `throw`, `new Promise`, raw `JSON.parse`, and `stub()` in `verify`), and import bans (`drizzle-orm/*`, `alchemy/*`, `@effect/sql-*`) | `oxlint .` per project |
-| `test` | Unit and integration test assertions | `@effect/vitest` / Vitest per project |
+| `typecheck` | Floating Effects, Layer requirement leaks, invalid types (including `stub<A, E, R>` skeletons) | `@effect/tsgo` (`tsc --noEmit && effect-tsgo diagnostics --strict`) per project |
+| `lint` | Oxlint rules, Effect plugin diagnostics, `@nx/enforce-module-boundaries`, custom syntax bans (`async`/`await`, `try`/`catch`, `throw`, `new Promise`, raw `JSON.parse`, `@effect-diagnostics`, and `stub()` in `verify`), and import bans (`drizzle-orm/*`, `alchemy/*`, `@effect/sql-*`) | `oxlint --deny-warnings .` per project |
+| `test` | Unit, property-based (`FastCheck`), and trace-budget test assertions | `@effect/vitest` / Vitest per project |
+| `gc` | Zero-entropy graph & governance check (`GraphGc.decide`, `EarsSpecLint.decide`, `AdrDocLint.decide`, `OntologyInvariants.decide`) | `harness gc --strict` |
+| `ontology` | Cross-layer ArchiMate 3.2 invariants + Clef semantic conflict detection (`OntologyConflictV1`) | `harness ontology check --strict` |
+| `mutate` | AST mutation testing on pure domain deciders (`MutationCheck.decide`, 100% kill score) | `harness mutate --strict` |
 | `migration:check` | Drizzle v1 (`1.0.0-rc.5-ab785fc`) schema drift against committed migrations; destructive SQL (`DROP`) escalation | `node scripts/check-migrations.mjs` in infra libraries |
-| `verify` | Composite target checking all project gates | `nx affected -t verify` / `pnpm verify:all` |
+| `verify` | Composite target checking all project gates and writing `.harness/verify-stamp.json` | `harness verify` / `nx affected -t verify` / `pnpm verify:all` |
 
 **Definition of Done:** `nx affected -t verify` is green across all affected projects.
 
@@ -71,24 +74,82 @@ export const checkout = Effect.fn("Cart.checkout")(function* (input: CheckoutInp
 libs/harness/
   decision/          DecisionModel definitions over effect/ai + @effect/ai-typesafe (resident clef-flash)
   ingest/            Effect.fn static index, recording tracer with root TestSpan, workerd trace correlation
-  graph/             effect/Graph builder & algorithms, schema.pg, @modernrelay/omnigraph sync, @ast-grep/napi
-  gates/             stub<A, E, R> helper, guard policy, verify tree-hash stamp, plan-check & done verifiers
+  graph/             effect/Graph builder, ArchiMate 3.2 ontology, schema.pg, queries/harness.gq, @modernrelay/omnigraph sync
+  gates/             stub<A, E, R> helper, guard policy, EARS/ADR/Ontology gates, mutation testing, session telemetry & report
 libs/sample/
   contract/          shared Schemas, HttpApi, RpcGroup, API errors (type:contract)
   domain/            use cases and pure domain logic, no I/O (type:domain)
   infra/             live Layer implementations, Drizzle repositories, migrations (type:infra)
 apps/sample/         sample app using Alchemy v2 for Cloudflare infrastructure (type:app)
-apps/harness-cli/    harness guard | route | plan-check | verify | done | ingest | session | doctor
-apps/harness-mcp/    Effect MCP server (harness_route, harness_resolve, harness_callers, harness_callees, harness_tests_reaching, harness_structural_search)
+apps/harness-cli/    harness guard | route | plan-check | verify | done | learn | gc | mutate | ontology | report | ingest | session | doctor
+apps/harness-mcp/    Effect MCP server (harness_route, harness_resolve, harness_callers, harness_callees, harness_tests_reaching, harness_structural_search, harness_ontology_why, harness_ontology_impact, harness_ontology_check, harness_gq_query, harness_lsp_diagnostics, harness_telemetry_report)
 adapters/
-  claude-code/       plugin: hooks.json -> harness-cli, .mcp.json -> harness-mcp + @modernrelay/omnigraph-mcp + nx-mcp, skill
+  antigravity/       plugin: hooks.yaml -> harness-cli, mcp_config.json -> harness-mcp + @modernrelay/omnigraph-mcp + nx-mcp, 4 skills
+  claude-code/       plugin: hooks.json -> harness-cli, .mcp.json -> harness-mcp + @modernrelay/omnigraph-mcp + nx-mcp, 4 skills
 repos/effect/        squashed subtree, read-only
 repos/alchemy/       squashed subtree, read-only
 agent-patterns/      reviewed pattern files (also indexed as PatternDoc nodes in Omnigraph)
 AGENTS.md            agent-neutral rules
 ```
 
+## Using as a Template & Bidirectional Upstream Sync (`upstream`)
+
+> **Important:** Avoid creating downstream projects via the GitHub UI *"Use this template"* button if you plan to sync harness improvements back and forth. GitHub's template generator squashes history into a new orphan commit with a different SHA, which causes `fatal: refusing to merge unrelated histories` on `git merge` / `git pull`.
+
+To create a new downstream repository (such as [`selmeci/effect-es`](https://github.com/selmeci/effect-es)) that preserves **shared Git commit history** with [`selmeci/effect-ts-harness`](https://github.com/selmeci/effect-ts-harness):
+
+### 1. Bootstrapping a New Project with Shared History
+
+```bash
+# Create an empty repository on GitHub (without --template squash)
+gh repo create selmeci/<new-project> --public
+
+# Push the clean main branch from effect-ts-harness
+git push git@github.com:selmeci/<new-project>.git main:main
+
+# Clone the new project and register effect-ts-harness as upstream
+git clone git@github.com:selmeci/<new-project>.git ~/WebstormProjects/<new-project>
+cd ~/WebstormProjects/<new-project>
+git remote add upstream git@github.com:selmeci/effect-ts-harness.git
+git fetch upstream
+```
+
+### 2. Pulling Harness Updates into a Downstream Project (`upstream -> origin`)
+
+Whenever new gates, ontology rules, or skills are added to `selmeci/effect-ts-harness`:
+
+```bash
+git fetch upstream
+git merge upstream/main
+```
+
+Because both repositories share the same ancestor commits on `main`, Git performs a clean 3-way merge across `libs/harness/*`, `apps/harness-*`, `agent-patterns/*`, `adapters/*`, and `tools/*` without touching your domain packages (`libs/<scope>/*`).
+
+### 3. Upstreaming Harness Improvements from a Downstream Project (`origin -> upstream`)
+
+When you improve the harness while working in a downstream project (e.g., `selmeci/effect-es`):
+
+1. **Option A — Cherry-pick a dedicated harness commit:**
+   Commit your harness changes (`libs/harness/*`, `apps/harness-*`, `agent-patterns/*`, `adapters/*`, `tools/*`) in a separate commit, then cherry-pick it onto `upstream/main`:
+   ```bash
+   git fetch upstream
+   git checkout -b feat/harness-upgrade upstream/main
+   git cherry-pick <commit-sha>
+   git push upstream feat/harness-upgrade:main
+   ```
+
+2. **Option B — Extract harness paths directly onto `upstream/main`:**
+   If harness edits were mixed with domain commits on a feature branch (e.g., `feat/es-phase-1-decider-core`):
+   ```bash
+   git fetch upstream
+   git checkout -b feat/harness-upgrade upstream/main
+   git checkout <feature-branch> -- libs/harness apps/harness-cli apps/harness-mcp agent-patterns adapters tools
+   git commit -m "feat(harness): upstream harness improvements"
+   git push upstream feat/harness-upgrade:main
+   ```
+
 ## Documentation & References
 
 - [AGENTS.md](AGENTS.md): Order of authority, planning idioms, coding standards, and boundary rules for agents.
 - [docs/mvp_v2.md](docs/mvp_v2.md): Full MVP v2 architectural specification, empirical audit findings, acceptance criteria, and phase roadmap (supersedes [docs/mvp.md](docs/mvp.md)).
+
