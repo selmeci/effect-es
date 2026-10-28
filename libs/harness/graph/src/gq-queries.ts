@@ -45,8 +45,8 @@ export const HARNESS_GQ_QUERIES: Readonly<
     source: `query resolve_effect_fn($spanOrQualname: String) {
   match {
     $fn: EffectFn
+    $fn.spanName = $spanOrQualname or $fn.qualname = $spanOrQualname
   }
-  where $fn.spanName = $spanOrQualname or $fn.qualname = $spanOrQualname
   return {
     $fn.qualname,
     $fn.spanName,
@@ -68,15 +68,17 @@ export const HARNESS_GQ_QUERIES: Readonly<
     params: ["tagId"],
     source: `query find_service_providers($tagId: String) {
   match {
-    $layer: ServiceLayer -[:ProvidesService]-> $tag: ServiceTag
+    $layer: ServiceLayer
+    $tag: ServiceTag
+    $layer providesService $tag
+    $tag.tagId = $tagId or $tag.name = $tagId
   }
-  where $tag.tagId = $tagId or $tag.name = $tagId
   return {
-    layerQualname: $layer.qualname,
-    layerKind: $layer.layerKind,
-    packageTag: $layer.packageTag,
-    file: $layer.file,
-    tagId: $tag.tagId
+    $layer.qualname as layerQualname,
+    $layer.layerKind as layerKind,
+    $layer.packageTag as packageTag,
+    $layer.file as file,
+    $tag.tagId as tagId
   }
 }`
   },
@@ -86,13 +88,15 @@ export const HARNESS_GQ_QUERIES: Readonly<
     params: ["target"],
     source: `query find_callers($target: String) {
   match {
-    $caller -[$rel]-> $callee
+    $caller: EffectFn
+    $callee: EffectFn
+    $caller $rel:tracedCall $callee
+    $callee.qualname = $target or $callee.spanName = $target
   }
-  where $callee.qualname = $target or $callee.spanName = $target or $callee.tagId = $target or $callee.name = $target or $callee.errorTag = $target
   return {
-    caller: $caller,
-    rel: $rel,
-    callee: $callee
+    $caller.qualname as caller,
+    $rel.archimateRelation as rel,
+    $callee.qualname as callee
   }
 }`
   },
@@ -102,13 +106,15 @@ export const HARNESS_GQ_QUERIES: Readonly<
     params: ["caller"],
     source: `query find_callees($caller: String) {
   match {
-    $src -[$rel]-> $callee
+    $src: EffectFn
+    $callee: EffectFn
+    $src $rel:tracedCall $callee
+    $src.qualname = $caller or $src.spanName = $caller
   }
-  where $src.qualname = $caller or $src.spanName = $caller or $src.id = $caller or $src.testId = $caller
   return {
-    src: $src,
-    rel: $rel,
-    callee: $callee
+    $src.qualname as src,
+    $rel.archimateRelation as rel,
+    $callee.qualname as callee
   }
 }`
   },
@@ -118,13 +124,15 @@ export const HARNESS_GQ_QUERIES: Readonly<
     params: ["callee"],
     source: `query find_tests_reaching($callee: String) {
   match {
-    $test: VitestCase -[:ExercisesSpan*1..10]-> $fn: EffectFn
+    $test: VitestCase
+    $fn: EffectFn
+    $test exercisesSpan $fn
+    $fn.qualname = $callee or $fn.spanName = $callee
   }
-  where $fn.qualname = $callee or $fn.spanName = $callee
   return {
-    testId: $test.testId,
-    testFile: $test.testFile,
-    testName: $test.testName
+    $test.testId as testId,
+    $test.testFile as testFile,
+    $test.testName as testName
   }
 }`
   },
@@ -134,11 +142,11 @@ export const HARNESS_GQ_QUERIES: Readonly<
     params: ["layer"],
     source: `query ontology_layer_nodes($layer: String) {
   match {
-    $node
+    $node: EffectFn
+    $node.archimateLayer = $layer
   }
-  where $node.archimateLayer = $layer
   return {
-    node: $node
+    $node
   }
 }`
   },
@@ -148,13 +156,14 @@ export const HARNESS_GQ_QUERIES: Readonly<
     params: ["symbol"],
     source: `query ontology_governed_by($symbol: String) {
   match {
-    $doc -[$rel:GovernsSymbol | :SpecifiesSymbol]-> $target
+    $doc: AdrDoc
+    $target: Any { symbolKey: $symbol }
+    $doc $rel:governsSymbol $target
   }
-  where $target.qualname = $symbol or $target.tagId = $symbol or $target.errorTag = $symbol or $target.spanName = $symbol or $target.name = $symbol
   return {
-    doc: $doc,
-    rel: $rel,
-    target: $target
+    $doc,
+    $rel.archimateRelation as rel,
+    $target
   }
 }`
   },
@@ -166,14 +175,16 @@ export const HARNESS_GQ_QUERIES: Readonly<
     source: `query untested_domain_fns() {
   match {
     $fn: EffectFn
-  }
-  where $fn.packageTag = "domain" and not $fn.isStub and not exists {
-    $test: VitestCase -[:ExercisesSpan*1..10]-> $fn
+    $fn.packageTag = "domain" and $fn.isStub = false
+    not {
+      $test: VitestCase
+      $test exercisesSpan $fn
+    }
   }
   return {
-    qualname: $fn.qualname,
-    spanName: $fn.spanName,
-    file: $fn.file
+    $fn.qualname as qualname,
+    $fn.spanName as spanName,
+    $fn.file as file
   }
 }`
   }

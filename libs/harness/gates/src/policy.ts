@@ -5,7 +5,28 @@
 
 export type GuardVerdict = "allow" | "deny" | "ask" | "escalate"
 
-export const ALLOWLIST: ReadonlyArray<string> = ["nx ", "pnpm test", "pnpm nx ", "pnpm verify"]
+export const ALLOWLIST: ReadonlyArray<string> = [
+  "nx ",
+  "pnpm test",
+  "pnpm nx ",
+  "pnpm verify",
+  "CI=true pnpm nx ",
+  "CI=true pnpm test",
+  "CI=true pnpm verify",
+  "node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts",
+  "node --import ./tools/node-ts-resolver.mjs apps/harness-mcp/src/server.ts",
+  "git status",
+  "git diff",
+  "git log",
+  "git branch",
+  "git rev-parse",
+  "git checkout",
+  "git switch",
+  "git add",
+  "git commit",
+  "omnigraph ",
+  "omnigraph-server"
+]
 
 export const DENYLIST: ReadonlyArray<{ readonly token: string; readonly reason: string }> = [
   { token: "rm -rf", reason: "destructive delete" },

@@ -81,6 +81,58 @@ export interface SessionReportInput {
   readonly events: ReadonlyArray<TelemetryEvent>
   readonly frictionEvents?: ReadonlyArray<FrictionEvent> | undefined
   readonly stampValid?: boolean | undefined
+  readonly cumulative?: boolean | undefined
+}
+
+const TASK_WORK_TOOLS = new Set([
+  "plan-check",
+  "ingest",
+  "verify",
+  "gc",
+  "mutate"
+])
+
+export const scopeSessionReportInput = (
+  input: SessionReportInput
+): {
+  readonly events: ReadonlyArray<TelemetryEvent>
+  readonly frictionEvents: ReadonlyArray<FrictionEvent>
+} => {
+  const allEvents = input.events
+  const allFriction = input.frictionEvents ?? []
+  if (input.cumulative === true || allEvents.length === 0) {
+    return { events: allEvents, frictionEvents: allFriction }
+  }
+
+  let boundaryIdx = -1
+  for (let i = allEvents.length - 1; i >= 0; i--) {
+    const ev = allEvents[i]!
+    if (ev.toolName === "done" && ev.outcome === "ok") {
+      const hasSubsequentTaskWork = allEvents
+        .slice(i + 1)
+        .some((later) => TASK_WORK_TOOLS.has(later.toolName))
+      if (hasSubsequentTaskWork) {
+        boundaryIdx = i
+        break
+      }
+    }
+  }
+
+  if (boundaryIdx === -1) {
+    return { events: allEvents, frictionEvents: allFriction }
+  }
+
+  const scopedEvents = allEvents.slice(boundaryIdx + 1)
+  const windowStartTimestamp = scopedEvents[0]?.timestamp
+  const scopedFriction =
+    windowStartTimestamp === undefined
+      ? allFriction
+      : allFriction.filter((f) => f.timestamp >= windowStartTimestamp)
+
+  return {
+    events: scopedEvents,
+    frictionEvents: scopedFriction
+  }
 }
 
 export interface SessionReport {
@@ -96,9 +148,16 @@ export interface SessionReport {
 }
 
 export const decideSessionReport = Effect.fn("SessionReport.decide")(function* (
-  input: SessionReportInput
+  rawInput: SessionReportInput
 ) {
   yield* Effect.void
+
+  const scoped = scopeSessionReportInput(rawInput)
+  const input: SessionReportInput = {
+    ...rawInput,
+    events: scoped.events,
+    frictionEvents: scoped.frictionEvents
+  }
 
   const bySurface: Record<TelemetrySurface, number> = {
     cli: 0,
@@ -222,7 +281,10 @@ export const decideSessionReport = Effect.fn("SessionReport.decide")(function* (
   }
 
   const prematureDoneAttempts = input.events.filter(
-    (e) => e.toolName === "done" && (e.outcome === "fail" || e.outcome === "deny")
+    (e) =>
+      e.toolName === "done" &&
+      e.surface !== "hook" &&
+      (e.outcome === "fail" || e.outcome === "deny")
   ).length
 
   const graphDiscoveryCalls = input.events.filter(

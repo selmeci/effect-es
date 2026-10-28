@@ -1,0 +1,10 @@
+version: 1
+metadata:
+  name: harness
+state:
+  backend: cluster
+  lock: true
+graphs:
+  harness:
+    schema: schema.pg
+    queries: queries/

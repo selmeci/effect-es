@@ -1,0 +1,24 @@
+version: 1
+groups:
+  admins: [harness-cli, default]
+  readers: [agent-mcp, harness-cli, default]
+rules:
+  - id: readers-can-read
+    allow:
+      actors: { group: readers }
+      actions: [read]
+      branch_scope: any
+  - id: readers-can-invoke
+    allow:
+      actors: { group: readers }
+      actions: [invoke_query]
+  - id: admins-can-write-branch
+    allow:
+      actors: { group: admins }
+      actions: [read, export, change]
+      branch_scope: any
+  - id: admins-can-manage-branches
+    allow:
+      actors: { group: admins }
+      actions: [branch_create, branch_delete, branch_merge, schema_apply]
+      target_branch_scope: any

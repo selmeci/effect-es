@@ -276,4 +276,44 @@ describe("harness-mcp tools", () => {
   it("rejects unknown tools", async () => {
     await expect(executeTool("unknown_tool", {})).rejects.toThrow()
   })
+
+  it("completes MCP stdio handshake and lists all 12 tools when spawned from Antigravity plugin directory", async () => {
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js")
+    const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js")
+    const repoRoot = path.resolve(import.meta.dirname, "../../..")
+    const pluginDir = path.join(repoRoot, "adapters/antigravity/plugins/effect-harness")
+    const mcpConfig = JSON.parse(
+      fs.readFileSync(path.join(pluginDir, "mcp_config.json"), "utf8")
+    ) as {
+      readonly mcpServers: {
+        readonly "harness-mcp": { readonly command: string; readonly args: Array<string> }
+      }
+    }
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: mcpConfig.mcpServers["harness-mcp"].args,
+      cwd: pluginDir
+    })
+    const client = new Client({ name: "test-client", version: "1.0.0" })
+    try {
+      await client.connect(transport)
+      const toolsList = await client.listTools()
+      expect(toolsList.tools.map((t) => t.name)).toEqual([
+        "harness_resolve",
+        "harness_callers",
+        "harness_callees",
+        "harness_tests_reaching",
+        "harness_structural_search",
+        "harness_route",
+        "harness_ontology_why",
+        "harness_ontology_impact",
+        "harness_ontology_check",
+        "harness_gq_query",
+        "harness_lsp_diagnostics",
+        "harness_telemetry_report"
+      ])
+    } finally {
+      await client.close()
+    }
+  })
 })

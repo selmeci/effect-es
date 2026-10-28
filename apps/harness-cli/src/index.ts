@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync } from "node:fs"
+import { execFileSync, spawn } from "node:child_process"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Effect, Layer, Option, Schema } from "effect"
@@ -39,6 +39,7 @@ import {
   resolveHarnessStateDir,
   runDomainMutationSuite,
   scanGraphEntropy,
+  scopeSessionReportInput,
   summarizeFrictionEvents,
   type TelemetryCategory,
   type TelemetryEngineSource,
@@ -49,6 +50,7 @@ import {
 } from "@harness/gates"
 import {
   checkEffectGraph,
+  diffOmnigraphBranches,
   extractWorkspaceTypeAwareGraph,
   type HarnessGraph,
   loadGraphSnapshot,
@@ -530,14 +532,31 @@ const handlePlanCheck = (
     }
 
     if (!graphOnly) {
+      yield* ensureLocalOmnigraphReady(repoRoot)
       const snapshotPath = join(repoRoot, ".harness", "plan-graph-snapshot.json")
-      yield* syncToOmnigraphAndSnapshot(graph, {
+      const syncRes = yield* syncToOmnigraphAndSnapshot(graph, {
         branch: "plan/current",
+        from: "main",
         snapshotPath
       }).pipe(
         Effect.provide(OmnigraphSync.Live),
-        Effect.orElseSucceed(() => ({ syncedToOmnigraph: false, snapshotPath }))
+        Effect.orElseSucceed(() => ({ syncedToOmnigraph: false, snapshotPath, error: undefined }))
       )
+      recordTelemetry(options, {
+        surface: "cli",
+        category: "graph_query",
+        toolName: "omnigraph:sync-plan",
+        outcome: syncRes.syncedToOmnigraph ? "ok" : "fail",
+        durationMs: 1,
+        engineSource: syncRes.syncedToOmnigraph ? "omnigraph" : "memory-fallback"
+      })
+      if (!syncRes.syncedToOmnigraph) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: `Plan check failed: could not sync plan graph to Omnigraph${syncRes.error ? ` (${syncRes.error})` : ""}`
+        }
+      }
     }
 
     return { exitCode: 0, stdout: checkResult.mermaid, stderr: "" }
@@ -600,15 +619,32 @@ const handleVerify = (
       }
     }
 
+    yield* ensureLocalOmnigraphReady(repoRoot)
     const snapshotPath = join(repoRoot, ".harness", "graph-snapshot.json")
 
-    yield* syncToOmnigraphAndSnapshot(graph, {
+    const syncRes = yield* syncToOmnigraphAndSnapshot(graph, {
       branch: "impl/current",
+      from: "main",
       snapshotPath
     }).pipe(
       Effect.provide(OmnigraphSync.Live),
-      Effect.orElseSucceed(() => ({ syncedToOmnigraph: false, snapshotPath }))
+      Effect.orElseSucceed(() => ({ syncedToOmnigraph: false, snapshotPath, error: undefined }))
     )
+    recordTelemetry(options, {
+      surface: "cli",
+      category: "graph_query",
+      toolName: "omnigraph:sync-impl",
+      outcome: syncRes.syncedToOmnigraph ? "ok" : "fail",
+      durationMs: 1,
+      engineSource: syncRes.syncedToOmnigraph ? "omnigraph" : "memory-fallback"
+    })
+    if (!syncRes.syncedToOmnigraph) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: `Verification failed: could not sync implementation graph to Omnigraph${syncRes.error ? ` (${syncRes.error})` : ""}`
+      }
+    }
 
     if (!options?.skipSubprocessVerify && existsSync(join(repoRoot, "package.json"))) {
       const nxArgs = resolveNxAffectedArgs(repoRoot, ["verify"])
@@ -749,14 +785,41 @@ const handleDone = (
       }
     }
 
-    // 4. Merge branch impl/current into main when Omnigraph is reachable
-    yield* mergeOmnigraphBranch({
+    // 4. Diff and merge branch impl/current into main in Omnigraph (hard gate)
+    yield* ensureLocalOmnigraphReady(repoRoot)
+    yield* diffOmnigraphBranches({
+      source: "impl/current",
+      target: "plan/current"
+    }).pipe(
+      Effect.provide(OmnigraphSync.Live),
+      Effect.orElseSucceed(() => Option.none())
+    )
+
+    const merged = yield* mergeOmnigraphBranch({
       source: "impl/current",
       target: "main"
     }).pipe(
       Effect.provide(OmnigraphSync.Live),
       Effect.orElseSucceed(() => false)
     )
+    recordTelemetry(options, {
+      surface: isAntigravity ? "hook" : "cli",
+      category: "graph_query",
+      toolName: "omnigraph:merge-main",
+      outcome: merged ? "ok" : "fail",
+      durationMs: 1,
+      engineSource: merged ? "omnigraph" : "memory-fallback"
+    })
+    if (!merged) {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          decision: blockDecision,
+          reason: "Omnigraph branch merge (impl/current -> main) failed"
+        }),
+        stderr: ""
+      }
+    }
 
     // 5. All checks passed
     if (options?.repoRoot !== undefined || process.env.VITEST === undefined) {
@@ -774,6 +837,235 @@ const handleDone = (
       stderr: ""
     }
   })
+
+const LockJsonSchema = Schema.fromJsonString(
+  Schema.Record(Schema.String, Schema.Unknown)
+)
+
+function unlockOmnigraphClusterIfNeeded(
+  omnigraphBin: string,
+  clusterRootDir: string,
+  applyOutput?: string
+): void {
+  const lockIds = new Set<string>()
+  if (applyOutput) {
+    const match = applyOutput.match(/Admission lock:\s*([A-Za-z0-9_-]+)/)
+    if (match?.[1]) {
+      lockIds.add(match[1])
+    }
+  }
+  const lockPath = join(clusterRootDir, "__cluster", "lock.json")
+  if (existsSync(lockPath)) {
+    Effect.runSync(
+      Effect.try({
+        try: () => {
+          const raw = readFileSync(lockPath, "utf-8")
+          const parsedOpt = Schema.decodeOption(LockJsonSchema)(raw)
+          if (Option.isSome(parsedOpt)) {
+            const parsed = parsedOpt.value
+            for (const key of ["lock_id", "id", "lockId", "holder_id"]) {
+              const val = parsed[key]
+              if (typeof val === "string" && val.length > 0) {
+                lockIds.add(val)
+              }
+            }
+          }
+        },
+        catch: () => undefined
+      }).pipe(Effect.orElseSucceed(() => undefined))
+    )
+  }
+  for (const lockId of lockIds) {
+    Effect.runSync(
+      Effect.try({
+        try: () => {
+          execFileSync(
+            omnigraphBin,
+            ["cluster", "force-unlock", lockId, "--target", clusterRootDir],
+            { stdio: "ignore" }
+          )
+        },
+        catch: () => undefined
+      }).pipe(Effect.orElseSucceed(() => undefined))
+    )
+  }
+}
+
+function checkOmnigraphServerReady(baseUrl: string): Effect.Effect<boolean> {
+  return Effect.tryPromise({
+    try: () =>
+      globalThis
+        .fetch(`${baseUrl}/readyz`, {
+          method: "GET",
+          signal: AbortSignal.timeout(3000)
+        })
+        .then((r) => {
+          if (
+            r.status !== 200 ||
+            r.headers.get("Omnigraph-Http-Api") !== "0.14"
+          ) {
+            return Promise.resolve(false)
+          }
+          return r.json().then((rawBody: unknown) => {
+            if (typeof rawBody !== "object" || rawBody === null) {
+              return false
+            }
+            const body = rawBody as {
+              readonly ready?: boolean
+              readonly status?: string
+              readonly ready_graph_count?: number
+            }
+            return (
+              (body.ready === true || body.status === "serving") &&
+              (body.ready_graph_count ?? 0) >= 1
+            )
+          })
+        })
+        .catch(() => false),
+    catch: () => false
+  }).pipe(Effect.orElseSucceed(() => false))
+}
+
+function computeOmnigraphConfigStamp(configDir: string): string {
+  const files = ["cluster.yaml", "schema.pg", "queries/harness.gq"]
+  return files
+    .map((f) => {
+      const p = join(configDir, f)
+      return existsSync(p) ? readFileSync(p, "utf-8") : ""
+    })
+    .join("\n---\n")
+}
+
+function ensureLocalOmnigraphReady(
+  repoRoot: string
+): Effect.Effect<boolean> {
+  return Effect.gen(function* () {
+    const baseUrl = process.env.OMNIGRAPH_URL ?? "http://127.0.0.1:8080"
+    const clusterRepoRoot = existsSync(
+      join(repoRoot, "libs", "harness", "graph", "cluster.yaml")
+    )
+      ? repoRoot
+      : findWorkspaceRoot()
+    const harnessDir = resolveHarnessStateDir(clusterRepoRoot)
+    const clusterRootDir = join(harnessDir, "omnigraph-cluster")
+    const configDir = join(clusterRepoRoot, "libs", "harness", "graph")
+    const stampPath = join(clusterRootDir, ".config-stamp")
+    const expectedStamp = computeOmnigraphConfigStamp(configDir)
+    const currentStamp = existsSync(stampPath)
+      ? readFileSync(stampPath, "utf-8")
+      : ""
+    const configDrifted = currentStamp !== expectedStamp
+
+    if (configDrifted) {
+      yield* Effect.try({
+        try: () => {
+          execFileSync("pkill", ["-f", "omnigraph-server"], { stdio: "ignore" })
+        },
+        catch: () => undefined
+      }).pipe(Effect.orElseSucceed(() => undefined))
+      yield* Effect.sleep("300 millis")
+      yield* Effect.try({
+        try: () => {
+          rmSync(clusterRootDir, { recursive: true, force: true })
+        },
+        catch: () => undefined
+      }).pipe(Effect.orElseSucceed(() => undefined))
+    } else {
+      const alreadyReady = yield* checkOmnigraphServerReady(baseUrl)
+      if (alreadyReady) {
+        return true
+      }
+    }
+
+    const homeBin = join(process.env.HOME ?? "/root", ".local", "bin")
+    const omnigraphBin = join(homeBin, "omnigraph")
+    const omnigraphServerBin = join(homeBin, "omnigraph-server")
+
+    if (!existsSync(omnigraphBin) || !existsSync(omnigraphServerBin)) {
+      yield* Effect.try({
+        try: () => {
+          execFileSync(
+            "bash",
+            [
+              "-c",
+              "curl -fsSL https://raw.githubusercontent.com/ModernRelay/omnigraph/main/scripts/install.sh | VERSION=v0.14.0 bash"
+            ],
+            { stdio: "inherit" }
+          )
+        },
+        catch: () => undefined
+      }).pipe(Effect.orElseSucceed(() => undefined))
+    }
+
+    if (!existsSync(omnigraphBin) || !existsSync(omnigraphServerBin)) {
+      return false
+    }
+
+    yield* Effect.try({
+      try: () => {
+        if (!existsSync(clusterRootDir)) {
+          mkdirSync(clusterRootDir, { recursive: true })
+        }
+        unlockOmnigraphClusterIfNeeded(omnigraphBin, clusterRootDir)
+
+        const graphOmniDir = join(clusterRootDir, "graphs", "harness.omni")
+        if (!existsSync(graphOmniDir)) {
+          const out = execFileSync(
+            omnigraphBin,
+            [
+              "cluster",
+              "apply",
+              "--target",
+              clusterRootDir,
+              "--config",
+              configDir,
+              "--as",
+              "harness-cli",
+              "--json"
+            ],
+            {
+              cwd: clusterRepoRoot,
+              encoding: "utf-8",
+              stdio: ["ignore", "pipe", "pipe"]
+            }
+          )
+          unlockOmnigraphClusterIfNeeded(omnigraphBin, clusterRootDir, out)
+          writeFileSync(stampPath, expectedStamp, "utf-8")
+        }
+        unlockOmnigraphClusterIfNeeded(omnigraphBin, clusterRootDir)
+
+        const child = spawn(
+          omnigraphServerBin,
+          [
+            "--cluster",
+            `file://${clusterRootDir}`,
+            "--bind",
+            "127.0.0.1:8080",
+            "--unauthenticated"
+          ],
+          {
+            cwd: clusterRepoRoot,
+            detached: true,
+            stdio: "ignore"
+          }
+        )
+        child.unref()
+      },
+      catch: () => undefined
+    }).pipe(Effect.orElseSucceed(() => undefined))
+
+    // Wait up to 3 seconds for omnigraph-server /readyz
+    for (let i = 0; i < 30; i++) {
+      const isReady = yield* checkOmnigraphServerReady(baseUrl)
+      if (isReady) {
+        return true
+      }
+      yield* Effect.sleep("100 millis")
+    }
+
+    return false
+  })
+}
 
 const handleDoctorOrSession = (
   argv: ReadonlyArray<string>,
@@ -797,8 +1089,7 @@ const handleDoctorOrSession = (
       catch: () => false
     }).pipe(Effect.orElseSucceed(() => false))
 
-    const omnigraphDir = join(harnessDir, "omnigraph")
-    const omnigraphInitialized = existsSync(omnigraphDir)
+    const omnigraphInitialized = yield* ensureLocalOmnigraphReady(repoRoot)
 
     const workspaceRoot = findWorkspaceRoot()
     const tsconfigBasePath = existsSync(join(repoRoot, "tsconfig.base.json"))
@@ -851,9 +1142,14 @@ const handleDoctorOrSession = (
       existsSync(planPath) || existsSync(join(harnessDir, "verify-stamp.json"))
     const effectiveStampValid = hasPlanOrStamp ? stampCheck.valid : true
     const stampReason = !stampCheck.valid ? stampCheck.reason : undefined
-    const events = readFrictionEvents(repoRoot)
-    const frictionClusters = summarizeFrictionEvents(events)
-    const loopThrashing = checkLoopThrashing(events)
+    const rawFrictionEvents = readFrictionEvents(repoRoot)
+    const telemetryEvents = readTelemetryEvents(repoRoot)
+    const scoped = scopeSessionReportInput({
+      events: telemetryEvents,
+      frictionEvents: rawFrictionEvents
+    })
+    const frictionClusters = summarizeFrictionEvents(scoped.frictionEvents)
+    const loopThrashing = checkLoopThrashing(scoped.frictionEvents)
 
     const handoff = buildSessionHandoff({
       stampValid: effectiveStampValid,
@@ -864,14 +1160,13 @@ const handleDoctorOrSession = (
       loopThrashing
     })
 
-    const telemetryEvents = readTelemetryEvents(repoRoot)
     const telemetryReport = buildSessionReport({
       events: telemetryEvents,
-      frictionEvents: events,
+      frictionEvents: rawFrictionEvents,
       stampValid: effectiveStampValid
     })
 
-    const ok = nodeOk && snapshotDirOk && effectLspOk
+    const ok = nodeOk && snapshotDirOk && effectLspOk && omnigraphInitialized
 
     if (isAntigravity) {
       return {
@@ -901,7 +1196,7 @@ const handleDoctorOrSession = (
       }),
       stderr: ok
         ? ""
-        : `Doctor check failed: nodeOk=${nodeOk}, snapshotDirOk=${snapshotDirOk}, effectLspOk=${effectLspOk}`
+        : `Doctor check failed: nodeOk=${nodeOk}, snapshotDirOk=${snapshotDirOk}, effectLspOk=${effectLspOk}, omnigraphInitialized=${omnigraphInitialized}`
     }
   })
 
@@ -1093,7 +1388,8 @@ const handleReport = (
     const report = buildSessionReport({
       events,
       frictionEvents,
-      stampValid: stampCheck.valid
+      stampValid: stampCheck.valid,
+      cumulative: argv.includes("--all")
     })
     if (options?.repoRoot !== undefined || process.env.VITEST === undefined) {
       writeSessionReportFiles(repoRoot, report)
@@ -1295,10 +1591,14 @@ if (
   void Effect.runPromise(runCliEffect(process.argv.slice(2)))
     .then((res) => {
       if (res.stdout) {
-        process.stdout.write(res.stdout.endsWith("\n") ? res.stdout : res.stdout + "\n")
+        process.stdout.write(
+          res.stdout.endsWith("\n") ? res.stdout : res.stdout + "\n"
+        )
       }
       if (res.stderr) {
-        process.stderr.write(res.stderr.endsWith("\n") ? res.stderr : res.stderr + "\n")
+        process.stderr.write(
+          res.stderr.endsWith("\n") ? res.stderr : res.stderr + "\n"
+        )
       }
       process.exit(res.exitCode)
     })

@@ -393,7 +393,8 @@ describe("telemetry & session observability", () => {
               decideSessionReport({ events, frictionEvents })
             )
 
-            expect(report.totalEvents).toBe(events.length)
+            expect(report.totalEvents).toBeGreaterThanOrEqual(0)
+            expect(report.totalEvents).toBeLessThanOrEqual(events.length)
             expect(report.healthScore).toBeGreaterThanOrEqual(0)
             expect(report.healthScore).toBeLessThanOrEqual(100)
 
@@ -417,10 +418,107 @@ describe("telemetry & session observability", () => {
     [Schema.Array(TelemetryEvent)],
     ([events]) =>
       Effect.gen(function* () {
-        const report = yield* decideSessionReport({ events })
+        const report = yield* decideSessionReport({ events, cumulative: true })
         expect(report.totalEvents).toBe(events.length)
         expect(report.healthScore).toBeGreaterThanOrEqual(0)
         expect(report.healthScore).toBeLessThanOrEqual(100)
+      })
+  )
+
+  it.effect(
+    "scopes multi-task telemetry and friction logs to the active task window while ignoring hook Stop turns in prematureDoneAttempts",
+    () =>
+      Effect.gen(function* () {
+        const events: ReadonlyArray<TelemetryEvent> = [
+          // Task 1 (completed earlier)
+          {
+            timestamp: "2026-10-27T09:00:00.000Z",
+            surface: "cli",
+            category: "gate",
+            toolName: "verify",
+            outcome: "fail",
+            durationMs: 500
+          },
+          {
+            timestamp: "2026-10-27T09:05:00.000Z",
+            surface: "cli",
+            category: "lifecycle",
+            toolName: "done",
+            outcome: "ok",
+            durationMs: 20
+          },
+          // Task 2 (active/latest task)
+          {
+            timestamp: "2026-10-28T10:00:00.000Z",
+            surface: "cli",
+            category: "gate",
+            toolName: "plan-check",
+            outcome: "ok",
+            durationMs: 300
+          },
+          // Automatic Antigravity Stop hook turn handoff after plan-check (should NOT penalize prematureDoneAttempts)
+          {
+            timestamp: "2026-10-28T10:01:00.000Z",
+            surface: "hook",
+            category: "lifecycle",
+            toolName: "done",
+            outcome: "fail",
+            durationMs: 11
+          },
+          {
+            timestamp: "2026-10-28T10:02:00.000Z",
+            surface: "mcp",
+            category: "ontology",
+            toolName: "harness_ontology_check",
+            outcome: "ok",
+            durationMs: 40,
+            engineSource: "local"
+          },
+          {
+            timestamp: "2026-10-28T10:03:00.000Z",
+            surface: "cli",
+            category: "gate",
+            toolName: "verify",
+            outcome: "ok",
+            durationMs: 450
+          },
+          {
+            timestamp: "2026-10-28T10:04:00.000Z",
+            surface: "cli",
+            category: "lifecycle",
+            toolName: "done",
+            outcome: "ok",
+            durationMs: 25
+          }
+        ]
+
+        const frictionEvents = [
+          // Stale friction from Task 1 (before 2026-10-28T10:00:00.000Z)
+          {
+            kind: "guard_escalation" as const,
+            timestamp: "2026-10-27T09:01:00.000Z",
+            summary: "old command",
+            detail: "old friction"
+          }
+        ]
+
+        const scopedReport = yield* decideSessionReport({ events, frictionEvents })
+        expect(scopedReport.totalEvents).toBe(5)
+        expect(scopedReport.kpis.verifyAttempts).toBe(1)
+        expect(scopedReport.kpis.fixUpIterations).toBe(0)
+        expect(scopedReport.kpis.prematureDoneAttempts).toBe(0)
+        expect(scopedReport.kpis.frictionCount).toBe(0)
+        expect(scopedReport.healthScore).toBe(100)
+        expect(scopedReport.grade).toBe("A")
+
+        const cumulativeReport = yield* decideSessionReport({
+          events,
+          frictionEvents,
+          cumulative: true
+        })
+        expect(cumulativeReport.totalEvents).toBe(7)
+        expect(cumulativeReport.kpis.fixUpIterations).toBe(1)
+        expect(cumulativeReport.kpis.frictionCount).toBe(1)
       })
   )
 })

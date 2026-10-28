@@ -105,12 +105,22 @@ const findRepoRoot = (startDir: string): string => {
   return startDir
 }
 
+const SERVER_REPO_ROOT = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)))
+
+const resolveDefaultRepoRoot = (): string => {
+  const fromCwd = findRepoRoot(process.cwd())
+  if (fs.existsSync(path.join(fromCwd, "pnpm-workspace.yaml"))) {
+    return fromCwd
+  }
+  return SERVER_REPO_ROOT
+}
+
 const resolveGraph = (options?: ServerOptions): Effect.Effect<HarnessGraph> => {
   if (options?.graph) {
     return Effect.succeed(options.graph)
   }
   return Effect.try(() => {
-    const root = findRepoRoot(process.cwd())
+    const root = options?.repoRoot ?? resolveDefaultRepoRoot()
     const snapshotPath =
       options?.snapshotPath ??
       path.join(root, ".harness", "graph-snapshot.json")
@@ -245,7 +255,8 @@ export const executeToolEffect = (
       }
       case "harness_structural_search": {
         const pattern = (args as { pattern: string }).pattern
-        result = structuralSearch({ pattern })
+        const root = options?.repoRoot ?? resolveDefaultRepoRoot()
+        result = structuralSearch({ pattern, repoRoot: root })
         break
       }
       case "harness_route": {
@@ -279,7 +290,7 @@ export const executeToolEffect = (
       case "harness_ontology_check": {
         const scope = (args as { scope?: string | undefined }).scope
         const graph = yield* resolveGraph(options)
-        const root = options?.repoRoot ?? findRepoRoot(process.cwd())
+        const root = options?.repoRoot ?? resolveDefaultRepoRoot()
         const docs = options?.governanceDocs ?? loadGovernanceDocsFromDisk(root)
         const invariants = yield* decideOntologyInvariants({
           graph,
@@ -322,7 +333,7 @@ export const executeToolEffect = (
       case "harness_lsp_diagnostics": {
         const file = (args as { file?: string | undefined }).file
         const project = (args as { project?: string | undefined }).project
-        const root = options?.repoRoot ?? findRepoRoot(process.cwd())
+        const root = options?.repoRoot ?? resolveDefaultRepoRoot()
         if (options?.lspDiagnosticsRunner !== undefined) {
           result = options.lspDiagnosticsRunner({ file, project })
         } else {
@@ -332,7 +343,7 @@ export const executeToolEffect = (
       }
       case "harness_telemetry_report": {
         const format = (args as { format?: "json" | "markdown" | undefined }).format
-        const root = options?.repoRoot ?? findRepoRoot(process.cwd())
+        const root = options?.repoRoot ?? resolveDefaultRepoRoot()
         const events = readTelemetryEvents(root)
         const frictionEvents = readFrictionEvents(root)
         const report = buildSessionReport({ events, frictionEvents })
@@ -348,7 +359,7 @@ export const executeToolEffect = (
 
     const durationMs = Math.max(0, Math.round(performance.now() - startTime))
     if (options?.repoRoot !== undefined || process.env.VITEST === undefined) {
-      const root = options?.repoRoot ?? findRepoRoot(process.cwd())
+      const root = options?.repoRoot ?? resolveDefaultRepoRoot()
       let category: TelemetryCategory = "graph_query"
       if (
         toolName === "harness_ontology_why" ||

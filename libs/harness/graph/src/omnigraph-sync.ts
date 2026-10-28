@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer, Option } from "effect"
+import { Context, Data, Effect, Layer, Option, Schema } from "effect"
 import { type Diff, type FetchLike, Omnigraph } from "@modernrelay/omnigraph"
 import {
   executeNamedGqQueryInMemory,
@@ -7,6 +7,10 @@ import {
 } from "./gq-queries.js"
 import { saveGraphSnapshot, toOmnigraphNdjson } from "./graph-engine.js"
 import type { HarnessGraph } from "./model.js"
+
+const decodeJsonRecordOption = Schema.decodeOption(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown))
+)
 
 export const OmnigraphClient = Omnigraph
 
@@ -17,6 +21,7 @@ export class OmnigraphLoadError extends Data.TaggedError("OmnigraphLoadError")<{
 export interface OmnigraphSyncResult {
   readonly syncedToOmnigraph: boolean
   readonly snapshotPath: string
+  readonly error?: string | undefined
 }
 
 export interface OmnigraphConnectionOptions {
@@ -34,12 +39,120 @@ export const makeOmnigraphClient = (
   const graphId =
     options?.graphId ?? process.env.OMNIGRAPH_GRAPH_ID ?? "harness"
   const token = options?.token ?? process.env.OMNIGRAPH_TOKEN
+
   return new Omnigraph({
     baseUrl,
     graphId,
     ...(token ? { token } : {}),
     ...(options?.fetch ? { fetch: options.fetch } : {})
   })
+}
+
+const toOmnigraphServerNdjson = (graph: HarnessGraph): string => {
+  const raw = toOmnigraphNdjson(graph)
+  const rawLines = raw.split("\n").filter((l) => l.trim().length > 0)
+  const nodeLines: Array<string> = []
+  const edgeRecords: Array<{
+    readonly edge: string
+    readonly from: string
+    readonly to: string
+    readonly data: Record<string, unknown>
+  }> = []
+  const nodeKeysByType = new Map<string, Set<string>>()
+  const anyNodes = new Map<string, string>()
+
+  const addNodeKey = (type: string, key: string): void => {
+    let set = nodeKeysByType.get(type)
+    if (!set) {
+      set = new Set<string>()
+      nodeKeysByType.set(type, set)
+    }
+    set.add(key)
+  }
+
+  for (const line of rawLines) {
+    const decoded = decodeJsonRecordOption(line)
+    if (Option.isNone(decoded)) continue
+    const parsed = decoded.value
+    if (typeof parsed.edge === "string") {
+      const edgeName = parsed.edge
+      const from = typeof parsed.from === "string" ? parsed.from : ""
+      const to = typeof parsed.to === "string" ? parsed.to : ""
+      const data =
+        typeof parsed.data === "object" && parsed.data !== null
+          ? { ...(parsed.data as Record<string, unknown>) }
+          : {}
+      edgeRecords.push({ edge: edgeName, from, to, data })
+      if (edgeName === "GovernsSymbol" || edgeName === "SpecifiesSymbol") {
+        const targetKind =
+          typeof data.targetKind === "string" ? data.targetKind : "EffectFn"
+        anyNodes.set(to, targetKind)
+      }
+    } else if (typeof parsed.type === "string") {
+      const nodeType = parsed.type
+      const data =
+        typeof parsed.data === "object" && parsed.data !== null
+          ? { ...(parsed.data as Record<string, unknown>) }
+          : {}
+      if (nodeType === "EffectFn" && data.successType === null) {
+        data.successType = "unknown"
+      }
+      if (nodeType === "VitestCase" && data.lastTreeHash === null) {
+        data.lastTreeHash = ""
+      }
+      const id = typeof parsed.id === "string" ? parsed.id : ""
+      if (id.length > 0) {
+        addNodeKey(nodeType, id)
+      }
+      nodeLines.push(JSON.stringify({ type: nodeType, data }))
+    }
+  }
+
+  for (const [symbolKey, targetKind] of anyNodes.entries()) {
+    addNodeKey("Any", symbolKey)
+    nodeLines.push(
+      JSON.stringify({
+        type: "Any",
+        data: {
+          symbolKey,
+          targetKind,
+          archimateLayer: "Business",
+          archimateAspect: "Behavior",
+          archimateElementType: targetKind
+        }
+      })
+    )
+  }
+
+  const edgeEndpoints: Readonly<Record<string, readonly [string, string]>> = {
+    RequiresService: ["EffectFn", "ServiceTag"],
+    FailsWith: ["EffectFn", "TaggedError"],
+    ProvidesService: ["ServiceLayer", "ServiceTag"],
+    LayerRequires: ["ServiceLayer", "ServiceTag"],
+    TracedCall: ["EffectFn", "EffectFn"],
+    ExercisesSpan: ["VitestCase", "EffectFn"],
+    GovernsSymbol: ["AdrDoc", "Any"],
+    SpecifiesSymbol: ["EarsSpec", "Any"]
+  }
+
+  const validEdgeLines: Array<string> = []
+  const seenEdges = new Set<string>()
+  for (const rec of edgeRecords) {
+    const endpoints = edgeEndpoints[rec.edge]
+    if (!endpoints) continue
+    const [srcType, dstType] = endpoints
+    const edgeKey = `${rec.edge}::${rec.from}::${rec.to}`
+    if (seenEdges.has(edgeKey)) continue
+    if (
+      nodeKeysByType.get(srcType)?.has(rec.from) &&
+      nodeKeysByType.get(dstType)?.has(rec.to)
+    ) {
+      seenEdges.add(edgeKey)
+      validEdgeLines.push(JSON.stringify(rec))
+    }
+  }
+
+  return [...nodeLines, ...validEdgeLines].join("\n")
 }
 
 export interface OmnigraphSyncShape {
@@ -98,9 +211,41 @@ export class OmnigraphSync extends Context.Service<OmnigraphSync, OmnigraphSyncS
 
           const branch = options?.branch ?? "main"
           const og = makeOmnigraphClient(options)
-          const ndjson = toOmnigraphNdjson(graph)
+          const ndjson = toOmnigraphServerNdjson(graph)
 
-          const syncResult = yield* Effect.tryPromise({
+          if (ndjson.trim().length === 0) {
+            const branchReady = yield* Effect.gen(function* () {
+              if (branch === "main") {
+                yield* Effect.tryPromise({
+                  try: () => og.health(),
+                  catch: (cause) => new OmnigraphLoadError({ cause })
+                })
+                return true
+              }
+              const branches = yield* Effect.tryPromise({
+                try: () => og.branches.list(),
+                catch: (cause) => new OmnigraphLoadError({ cause })
+              })
+              if (!branches.includes(branch)) {
+                yield* Effect.tryPromise({
+                  try: () =>
+                    og.branches.create({
+                      name: branch,
+                      from: options?.from ?? "main"
+                    }),
+                  catch: (cause) => new OmnigraphLoadError({ cause })
+                })
+              }
+              return true
+            }).pipe(Effect.orElseSucceed(() => false))
+
+            return {
+              syncedToOmnigraph: branchReady,
+              snapshotPath
+            }
+          }
+
+          return yield* Effect.tryPromise({
             try: () =>
               og.load({
                 branch,
@@ -110,14 +255,21 @@ export class OmnigraphSync extends Context.Service<OmnigraphSync, OmnigraphSyncS
               }),
             catch: (cause) => new OmnigraphLoadError({ cause })
           }).pipe(
-            Effect.as(true),
-            Effect.orElseSucceed(() => false)
+            Effect.map(() => ({
+              syncedToOmnigraph: true,
+              snapshotPath
+            })),
+            Effect.catch((err) =>
+              Effect.succeed({
+                syncedToOmnigraph: false,
+                snapshotPath,
+                error:
+                  err.cause instanceof Error
+                    ? err.cause.message
+                    : String(err.cause)
+              })
+            )
           )
-
-          return {
-            syncedToOmnigraph: syncResult,
-            snapshotPath
-          }
         }),
 
       mergeBranch: (options) =>
@@ -126,13 +278,23 @@ export class OmnigraphSync extends Context.Service<OmnigraphSync, OmnigraphSyncS
           const target = options?.target ?? "main"
           const og = makeOmnigraphClient(options)
 
-          return yield* Effect.tryPromise({
-            try: () => og.branches.merge({ source, target }),
-            catch: (cause) => new OmnigraphLoadError({ cause })
-          }).pipe(
-            Effect.as(true),
-            Effect.orElseSucceed(() => false)
-          )
+          return yield* Effect.gen(function* () {
+            const branches = yield* Effect.tryPromise({
+              try: () => og.branches.list(),
+              catch: (cause) => new OmnigraphLoadError({ cause })
+            })
+            if (!branches.includes(source)) {
+              yield* Effect.tryPromise({
+                try: () => og.branches.create({ name: source, from: target }),
+                catch: (cause) => new OmnigraphLoadError({ cause })
+              })
+            }
+            yield* Effect.tryPromise({
+              try: () => og.branches.merge({ source, target }),
+              catch: (cause) => new OmnigraphLoadError({ cause })
+            })
+            return true
+          }).pipe(Effect.orElseSucceed(() => false))
         }),
 
       query: (input) =>

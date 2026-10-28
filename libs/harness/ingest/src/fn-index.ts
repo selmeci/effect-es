@@ -176,7 +176,14 @@ export const buildWorkspaceFnIndex = (
     ]
     for (const file of files) {
       const fullPath = path.join(repoRoot, file)
-      const content = fs.readFileSync(fullPath, "utf-8")
+      if (!fs.existsSync(fullPath)) continue
+      const content = Effect.runSync(
+        Effect.try({
+          try: () => fs.readFileSync(fullPath, "utf-8"),
+          catch: () => null
+        }).pipe(Effect.orElseSucceed(() => null))
+      )
+      if (content === null) continue
       const tag = resolvePackageTag(repoRoot, file)
       const fns = indexEffectFnsInFile(file, content, tag)
       allFns.push(...fns)

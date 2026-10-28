@@ -57,7 +57,9 @@ describe("Claude Code adapter & Omnigraph Cedar policy", () => {
       command: "npx",
       args: ["-y", "@modernrelay/omnigraph-mcp@0.14.0"],
       env: {
+        OMNIGRAPH_BASE_URL: "http://127.0.0.1:8080",
         OMNIGRAPH_URL: "http://127.0.0.1:8080",
+        OMNIGRAPH_GRAPH_ID: "harness",
         OMNIGRAPH_SUBJECT: "agent-mcp"
       }
     })
@@ -149,7 +151,21 @@ describe("Antigravity adapter & plugin configuration", () => {
     ])
     expect(mcp.mcpServers["harness-mcp"]).toEqual({
       command: "node",
-      args: ["--import", "./tools/node-ts-resolver.mjs", "apps/harness-mcp/src/server.ts"]
+      args: [
+        "--import",
+        "../../../../tools/node-ts-resolver.mjs",
+        "../../../../apps/harness-mcp/src/server.ts"
+      ]
+    })
+    expect(mcp.mcpServers["omnigraph-mcp"]).toEqual({
+      command: "npx",
+      args: ["-y", "@modernrelay/omnigraph-mcp@0.14.0"],
+      env: {
+        OMNIGRAPH_BASE_URL: "http://127.0.0.1:8080",
+        OMNIGRAPH_URL: "http://127.0.0.1:8080",
+        OMNIGRAPH_GRAPH_ID: "harness",
+        OMNIGRAPH_SUBJECT: "agent-mcp"
+      }
     })
   })
 

@@ -2,9 +2,23 @@ import { describe, expect, it } from "vitest"
 import { classifyCommand } from "../src/policy.js"
 
 describe("guard policy", () => {
-  it("allows nx and pnpm test commands", () => {
+  it("allows nx, pnpm test, harness-cli, harness-mcp, and safe git commands", () => {
     expect(classifyCommand("nx test @harness/ingest")).toBe("allow")
     expect(classifyCommand("pnpm test")).toBe("allow")
+    expect(classifyCommand("CI=true pnpm nx test harness-mcp")).toBe("allow")
+    expect(
+      classifyCommand(
+        "node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts plan-check"
+      )
+    ).toBe("allow")
+    expect(
+      classifyCommand(
+        "node --import ./tools/node-ts-resolver.mjs apps/harness-mcp/src/server.ts"
+      )
+    ).toBe("allow")
+    expect(classifyCommand("git status")).toBe("allow")
+    expect(classifyCommand("git diff HEAD~1")).toBe("allow")
+    expect(classifyCommand("git checkout -b feat/new main")).toBe("allow")
   })
 
   it("denies rm -rf outside the workspace, .env and force pushes", () => {

@@ -64,10 +64,10 @@ node AdrDoc {
   title: String @index
   status: enum(accepted, proposed, superseded, deprecated) @index
   path: String @index
-  enforcedByFiles: List<String>
-  referencedSpans: List<String>
-  referencedServices: List<String>
-  referencedErrors: List<String>
+  enforcedByFiles: [String]
+  referencedSpans: [String]
+  referencedServices: [String]
+  referencedErrors: [String]
   archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
   archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
   archimateElementType: String @index
@@ -78,10 +78,18 @@ node EarsSpec {
   title: String @index
   status: enum(accepted, proposed, superseded, deprecated) @index
   path: String @index
-  enforcedByFiles: List<String>
-  referencedSpans: List<String>
-  referencedServices: List<String>
-  referencedErrors: List<String>
+  enforcedByFiles: [String]
+  referencedSpans: [String]
+  referencedServices: [String]
+  referencedErrors: [String]
+  archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
+  archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
+  archimateElementType: String @index
+}
+
+node Any {
+  symbolKey: String @key
+  targetKind: String @index
   archimateLayer: enum(Motivation, Business, Application, Technology, Implementation) @index
   archimateAspect: enum(Motivation, Behavior, ActiveStructure, PassiveStructure) @index
   archimateElementType: String @index
@@ -89,46 +97,38 @@ node EarsSpec {
 
 edge RequiresService: EffectFn -> ServiceTag @card(0..) {
   archimateRelation: String @index
-  @unique(@src, @dst)
 }
 
 edge FailsWith: EffectFn -> TaggedError @card(0..) {
   archimateRelation: String @index
-  @unique(@src, @dst)
 }
 
 edge ProvidesService: ServiceLayer -> ServiceTag @card(0..) {
   archimateRelation: String @index
-  @unique(@src, @dst)
 }
 
 edge LayerRequires: ServiceLayer -> ServiceTag @card(0..) {
   archimateRelation: String @index
-  @unique(@src, @dst)
 }
 
 edge TracedCall: EffectFn -> EffectFn @card(0..) {
   callCount: I64
   receiverLayer: String?
   archimateRelation: String @index
-  @unique(@src, @dst)
 }
 
 edge ExercisesSpan: VitestCase -> EffectFn @card(0..) {
   callCount: I64
   receiverLayer: String?
   archimateRelation: String @index
-  @unique(@src, @dst)
 }
 
 edge GovernsSymbol: AdrDoc -> Any @card(0..) {
   targetKind: String @index
   archimateRelation: String @index
-  @unique(@src, @dst)
 }
 
 edge SpecifiesSymbol: EarsSpec -> Any @card(0..) {
   targetKind: String @index
   archimateRelation: String @index
-  @unique(@src, @dst)
 }
