@@ -37,6 +37,16 @@ export async function resolve(specifier, context, nextResolve) {
         return nextResolve(pathToFileURL(targetPath).href, context)
       }
     }
+    const scopedMatch = /^@harness\/([a-z0-9-]+)-(contract|service|domain|infra)$/.exec(
+      specifier
+    )
+    if (scopedMatch !== null) {
+      const [, scope, tier] = scopedMatch
+      const dynamicTarget = join(repoRoot, "libs", scope, tier, "src", "index.ts")
+      if (existsSync(dynamicTarget)) {
+        return nextResolve(pathToFileURL(dynamicTarget).href, context)
+      }
+    }
     throw error
   }
 }
