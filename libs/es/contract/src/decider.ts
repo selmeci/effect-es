@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { match } from "ts-pattern"
 
 export interface DeciderDefinition<State, Command, Event, Error> {
   readonly initialState: State
@@ -209,39 +210,45 @@ export const DeciderSpec = {
           Effect.gen(function* () {
             const priorState = decider.fold(pastEvents)
             const exit = yield* Effect.exit(decider.decide(command, priorState))
-            if (exit._tag === "Success") {
-              return yield* Effect.die(
-                new Error(
-                  `DeciderSpec.thenFails: expected failure with tag "${expectedTag}", but succeeded with events: ${JSON.stringify(exit.value)}`
+            return yield* match(exit)
+              .with({ _tag: "Success" }, (s) =>
+                Effect.die(
+                  new Error(
+                    `DeciderSpec.thenFails: expected failure with tag "${expectedTag}", but succeeded with events: ${JSON.stringify(s.value)}`
+                  )
                 )
               )
-            }
-            const cause = exit.cause
-            const failReasons = cause.reasons.filter(
-              (r): r is Extract<(typeof cause.reasons)[number], { readonly _tag: "Fail" }> =>
-                r._tag === "Fail"
-            )
-            const firstFail = failReasons[0]
-            if (!firstFail) {
-              return yield* Effect.die(
-                new Error(
-                  `DeciderSpec.thenFails: expected typed failure "${expectedTag}", but exited with defect/interruption`
-                )
+              .with({ _tag: "Failure" }, (f) =>
+                Effect.gen(function* () {
+                  const cause = f.cause
+                  const failReasons = cause.reasons.filter(
+                    (r): r is Extract<(typeof cause.reasons)[number], { readonly _tag: "Fail" }> =>
+                      r._tag === "Fail"
+                  )
+                  const firstFail = failReasons[0]
+                  if (!firstFail) {
+                    return yield* Effect.die(
+                      new Error(
+                        `DeciderSpec.thenFails: expected typed failure "${expectedTag}", but exited with defect/interruption`
+                      )
+                    )
+                  }
+                  const actualTag = firstFail.error._tag
+                  if (actualTag !== expectedTag) {
+                    return yield* Effect.die(
+                      new Error(
+                        `DeciderSpec.thenFails: expected error tag "${expectedTag}", but got "${actualTag}"`
+                      )
+                    )
+                  }
+                  const narrowed = firstFail.error as Extract<Error, { readonly _tag: Tag }>
+                  if (check) {
+                    check(narrowed)
+                  }
+                  return narrowed
+                })
               )
-            }
-            const err = firstFail.error
-            if (err._tag !== expectedTag) {
-              return yield* Effect.die(
-                new Error(
-                  `DeciderSpec.thenFails: expected error tag "${expectedTag}", but got "${err._tag}"`
-                )
-              )
-            }
-            const narrowed = err as Extract<Error, { readonly _tag: Tag }>
-            if (check) {
-              check(narrowed)
-            }
-            return narrowed
+              .exhaustive()
           })
       })
     })
