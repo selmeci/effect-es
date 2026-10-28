@@ -32,19 +32,42 @@ export class EmptyCartCheckoutError extends Schema.TaggedError<EmptyCartCheckout
 // Cart Fixture Schemas (State, Commands, Events)
 // ============================================================================
 
+export const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
+export type PositiveInt = typeof PositiveInt.Type
+
 export const CartItem = Schema.Struct({
   sku: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type CartItem = typeof CartItem.Type
 
-export const CartState = Schema.Struct({
+export const EmptyCartState = Schema.TaggedStruct("Empty", {
+  cartId: Schema.String,
+  customerId: Schema.String,
+  items: Schema.Array(CartItem)
+})
+export type EmptyCartState = typeof EmptyCartState.Type
+
+export const OpenCartState = Schema.TaggedStruct("Open", {
+  cartId: Schema.String,
+  customerId: Schema.String,
+  items: Schema.NonEmptyArray(CartItem)
+})
+export type OpenCartState = typeof OpenCartState.Type
+
+export const CheckedOutCartState = Schema.TaggedStruct("CheckedOut", {
   cartId: Schema.String,
   customerId: Schema.String,
   items: Schema.Array(CartItem),
-  checkedOut: Schema.Boolean,
-  checkedOutAt: Schema.NullOr(Schema.Int)
+  checkedOutAt: Schema.Int
 })
+export type CheckedOutCartState = typeof CheckedOutCartState.Type
+
+export const CartState = Schema.Union([
+  EmptyCartState,
+  OpenCartState,
+  CheckedOutCartState
+])
 export type CartState = typeof CartState.Type
 
 export const AddCartItem = Schema.TaggedStruct("AddCartItem", {
@@ -52,7 +75,7 @@ export const AddCartItem = Schema.TaggedStruct("AddCartItem", {
   cartId: Schema.NonEmptyString,
   customerId: Schema.NonEmptyString,
   sku: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type AddCartItem = typeof AddCartItem.Type
 
@@ -60,7 +83,7 @@ export const RemoveCartItem = Schema.TaggedStruct("RemoveCartItem", {
   commandId: Schema.NonEmptyString,
   cartId: Schema.NonEmptyString,
   sku: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type RemoveCartItem = typeof RemoveCartItem.Type
 
@@ -83,7 +106,7 @@ export const ItemAdded = Schema.TaggedStruct("ItemAdded", {
   cartId: Schema.NonEmptyString,
   customerId: Schema.NonEmptyString,
   sku: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type ItemAdded = typeof ItemAdded.Type
 
@@ -91,7 +114,7 @@ export const ItemRemoved = Schema.TaggedStruct("ItemRemoved", {
   version: Schema.Literal(1),
   cartId: Schema.NonEmptyString,
   sku: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type ItemRemoved = typeof ItemRemoved.Type
 
@@ -114,11 +137,10 @@ export type CartEvent = typeof CartEvent.Type
 // ============================================================================
 
 export const initialCartState: CartState = {
+  _tag: "Empty",
   cartId: "",
   customerId: "",
-  items: [],
-  checkedOut: false,
-  checkedOutAt: null
+  items: []
 }
 
 export const evolveCart = (state: CartState, event: CartEvent): CartState =>
@@ -133,10 +155,10 @@ export const evolveCart = (state: CartState, event: CartEvent): CartState =>
           )
         : [...state.items, { sku: e.sku, qty: e.qty }]
       return {
-        ...state,
+        _tag: "Open" as const,
         cartId: e.cartId,
         customerId: e.customerId,
-        items
+        items: items as [CartItem, ...Array<CartItem>]
       }
     })
     .with({ _tag: "ItemRemoved" }, (e) => {
@@ -147,16 +169,26 @@ export const evolveCart = (state: CartState, event: CartEvent): CartState =>
         const remainingQty = item.qty - e.qty
         return remainingQty <= 0 ? [] : [{ sku: item.sku, qty: remainingQty }]
       })
+      if (items.length === 0) {
+        return {
+          _tag: "Empty" as const,
+          cartId: e.cartId,
+          customerId: state.customerId,
+          items: []
+        }
+      }
       return {
-        ...state,
+        _tag: "Open" as const,
         cartId: e.cartId,
-        items
+        customerId: state.customerId,
+        items: items as [CartItem, ...Array<CartItem>]
       }
     })
     .with({ _tag: "CheckedOut" }, (e) => ({
-      ...state,
+      _tag: "CheckedOut" as const,
       cartId: e.cartId,
-      checkedOut: true,
+      customerId: state.customerId,
+      items: state.items,
       checkedOutAt: e.at
     }))
     .exhaustive()
@@ -169,64 +201,100 @@ export const decideCart = (
   CartAlreadyCheckedOutError | EmptyCartCheckoutError | InvalidQuantityError,
   never
 > =>
-  Effect.gen(function* () {
-    if (state.checkedOut) {
-      return yield* new CartAlreadyCheckedOutError({ cartId: command.cartId })
-    }
-
-    return yield* match(command)
-      .with({ _tag: "AddCartItem" }, (cmd) => {
-        if (cmd.qty <= 0) {
-          return new InvalidQuantityError({
-            sku: cmd.sku,
-            qty: cmd.qty
-          })
-        }
-        return Effect.succeed([
-          ItemAdded.make({
-            version: 1,
-            cartId: cmd.cartId,
-            customerId: cmd.customerId,
-            sku: cmd.sku,
-            qty: cmd.qty
-          })
-        ])
-      })
-      .with({ _tag: "RemoveCartItem" }, (cmd) => {
-        if (cmd.qty <= 0) {
-          return new InvalidQuantityError({
-            sku: cmd.sku,
-            qty: cmd.qty
-          })
-        }
-        const existing = state.items.find((item) => item.sku === cmd.sku)
-        if (!existing) {
+  match(state)
+    .with({ _tag: "CheckedOut" }, () =>
+      new CartAlreadyCheckedOutError({ cartId: command.cartId })
+    )
+    .with({ _tag: "Empty" }, () =>
+      match(command)
+        .with({ _tag: "AddCartItem" }, (cmd) => {
+          if (cmd.qty <= 0) {
+            return new InvalidQuantityError({
+              sku: cmd.sku,
+              qty: cmd.qty
+            })
+          }
+          return Effect.succeed([
+            ItemAdded.make({
+              version: 1,
+              cartId: cmd.cartId,
+              customerId: cmd.customerId,
+              sku: cmd.sku,
+              qty: cmd.qty
+            })
+          ])
+        })
+        .with({ _tag: "RemoveCartItem" }, (cmd) => {
+          if (cmd.qty <= 0) {
+            return new InvalidQuantityError({
+              sku: cmd.sku,
+              qty: cmd.qty
+            })
+          }
           return Effect.succeed([])
-        }
-        const removedQty = Math.min(cmd.qty, existing.qty)
-        return Effect.succeed([
-          ItemRemoved.make({
-            version: 1,
-            cartId: cmd.cartId,
-            sku: cmd.sku,
-            qty: removedQty
-          })
-        ])
-      })
-      .with({ _tag: "CheckoutCart" }, (cmd) => {
-        if (state.items.length === 0) {
-          return new EmptyCartCheckoutError({ cartId: cmd.cartId })
-        }
-        return Effect.succeed([
-          CheckedOut.make({
-            version: 1,
-            cartId: cmd.cartId,
-            at: cmd.at
-          })
-        ])
-      })
-      .exhaustive()
-  })
+        })
+        .with({ _tag: "CheckoutCart" }, (cmd) =>
+          new EmptyCartCheckoutError({ cartId: cmd.cartId })
+        )
+        .exhaustive()
+    )
+    .with({ _tag: "Open" }, (openState) =>
+      match(command)
+        .with({ _tag: "AddCartItem" }, (cmd) => {
+          if (cmd.qty <= 0) {
+            return new InvalidQuantityError({
+              sku: cmd.sku,
+              qty: cmd.qty
+            })
+          }
+          return Effect.succeed([
+            ItemAdded.make({
+              version: 1,
+              cartId: cmd.cartId,
+              customerId: cmd.customerId,
+              sku: cmd.sku,
+              qty: cmd.qty
+            })
+          ])
+        })
+        .with({ _tag: "RemoveCartItem" }, (cmd) => {
+          if (cmd.qty <= 0) {
+            return new InvalidQuantityError({
+              sku: cmd.sku,
+              qty: cmd.qty
+            })
+          }
+          const existing = openState.items.find((item) => item.sku === cmd.sku)
+          if (!existing) {
+            return Effect.succeed([])
+          }
+          if (cmd.qty > existing.qty) {
+            return new InvalidQuantityError({
+              sku: cmd.sku,
+              qty: cmd.qty
+            })
+          }
+          return Effect.succeed([
+            ItemRemoved.make({
+              version: 1,
+              cartId: cmd.cartId,
+              sku: cmd.sku,
+              qty: cmd.qty
+            })
+          ])
+        })
+        .with({ _tag: "CheckoutCart" }, (cmd) =>
+          Effect.succeed([
+            CheckedOut.make({
+              version: 1,
+              cartId: cmd.cartId,
+              at: cmd.at
+            })
+          ])
+        )
+        .exhaustive()
+    )
+    .exhaustive()
 
 export const CartDecider = Decider.make({
   initialState: initialCartState,

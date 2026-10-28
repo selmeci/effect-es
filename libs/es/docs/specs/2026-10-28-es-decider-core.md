@@ -36,7 +36,7 @@ Requirements follow EARS syntax. Each requirement is a single sentence with bold
 
 | ID | Pattern | Requirement | Effect Symbol | Verification |
 | --- | --- | --- | --- | --- |
-| REQ-1.1 | Ubiquitous | The EventMetadata contract schema **shall** validate non-empty aggregateId, commandId, correlationId, causationId, integer streamVersion, and integer timestamp fields. | EventMetadata | UnitTest |
+| REQ-1.1 | Ubiquitous | The EventMetadata contract schema **shall** validate non-empty aggregateId, commandId, correlationId, causationId, natural streamVersion, and integer timestamp fields. | EventMetadata | UnitTest |
 | REQ-1.2 | Event-driven | **When** `Decider.make` is invoked with `initialState`, `evolve`, and `decide`, the Decider helper **shall** expose a deterministic `fold` function that reduces an event sequence into aggregate state. | Decider | PropertyTest |
 | REQ-1.3 | Event-driven | **When** `DeciderSpec.for(decider).given(events).when(command)` is executed, the DeciderSpec runner **shall** verify emitted event partial matches via `thenEvents`. | DeciderSpec | UnitTest |
 | REQ-1.4 | Event-driven | **When** `DeciderSpec.for(decider).given(events).when(command)` is executed and the decider emits no events, the DeciderSpec runner **shall** verify the no-op state via `thenNothing`. | DeciderSpec | UnitTest |

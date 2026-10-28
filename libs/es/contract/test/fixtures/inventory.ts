@@ -31,15 +31,31 @@ export class ReservationNotFoundError extends Schema.TaggedError<ReservationNotF
   }
 ) {}
 
+export class ReservationConflictError extends Schema.TaggedError<ReservationConflictError>()(
+  "ReservationConflictError",
+  {
+    sku: Schema.String,
+    reservationId: Schema.String,
+    existingQty: Schema.Int,
+    requestedQty: Schema.Int,
+    existingCartId: Schema.String,
+    requestedCartId: Schema.String
+  }
+) {}
+
 // ============================================================================
 // Inventory Fixture Schemas (State, Commands, Events)
 // ============================================================================
 
+export const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
+export type PositiveInt = typeof PositiveInt.Type
+
 export const StockReservation = Schema.Struct({
   reservationId: Schema.NonEmptyString,
   cartId: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
+
 export type StockReservation = typeof StockReservation.Type
 
 export const InventoryState = Schema.Struct({
@@ -52,7 +68,7 @@ export type InventoryState = typeof InventoryState.Type
 export const AddStock = Schema.TaggedStruct("AddStock", {
   commandId: Schema.NonEmptyString,
   sku: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type AddStock = typeof AddStock.Type
 
@@ -61,7 +77,7 @@ export const ReserveStock = Schema.TaggedStruct("ReserveStock", {
   sku: Schema.NonEmptyString,
   reservationId: Schema.NonEmptyString,
   cartId: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type ReserveStock = typeof ReserveStock.Type
 
@@ -90,7 +106,7 @@ export type InventoryCommand = typeof InventoryCommand.Type
 export const StockAdded = Schema.TaggedStruct("StockAdded", {
   version: Schema.Literal(1),
   sku: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type StockAdded = typeof StockAdded.Type
 
@@ -99,7 +115,7 @@ export const StockReserved = Schema.TaggedStruct("StockReserved", {
   sku: Schema.NonEmptyString,
   reservationId: Schema.NonEmptyString,
   cartId: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type StockReserved = typeof StockReserved.Type
 
@@ -107,7 +123,7 @@ export const ReservationConfirmed = Schema.TaggedStruct("ReservationConfirmed", 
   version: Schema.Literal(1),
   sku: Schema.NonEmptyString,
   reservationId: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type ReservationConfirmed = typeof ReservationConfirmed.Type
 
@@ -115,7 +131,7 @@ export const ReservationReleased = Schema.TaggedStruct("ReservationReleased", {
   version: Schema.Literal(1),
   sku: Schema.NonEmptyString,
   reservationId: Schema.NonEmptyString,
-  qty: Schema.Int
+  qty: PositiveInt
 })
 export type ReservationReleased = typeof ReservationReleased.Type
 
@@ -182,7 +198,10 @@ export const decideInventory = (
   state: InventoryState
 ): Effect.Effect<
   ReadonlyArray<InventoryEvent>,
-  InsufficientStockError | ReservationNotFoundError | InvalidQuantityError,
+  | InsufficientStockError
+  | ReservationNotFoundError
+  | ReservationConflictError
+  | InvalidQuantityError,
   never
 > =>
   match(command)
@@ -208,11 +227,21 @@ export const decideInventory = (
           qty: cmd.qty
         })
       }
-      const alreadyReserved = state.reservations.some(
+      const existing = state.reservations.find(
         (r) => r.reservationId === cmd.reservationId
       )
-      if (alreadyReserved) {
-        return Effect.succeed([])
+      if (existing) {
+        if (existing.qty === cmd.qty && existing.cartId === cmd.cartId) {
+          return Effect.succeed([])
+        }
+        return new ReservationConflictError({
+          sku: cmd.sku,
+          reservationId: cmd.reservationId,
+          existingQty: existing.qty,
+          requestedQty: cmd.qty,
+          existingCartId: existing.cartId,
+          requestedCartId: cmd.cartId
+        })
       }
       if (state.availableQty >= cmd.qty) {
         return Effect.succeed([

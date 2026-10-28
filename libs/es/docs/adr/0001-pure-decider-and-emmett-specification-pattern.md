@@ -21,9 +21,10 @@ Effect v4 lacks an active, idiomatic aggregate event-sourcing framework. Communi
 ## Decision Drivers
 
 * **Zero-Infrastructure Domain Logic:** Aggregate deciders (`decide`) and state reducers (`evolve`) must require zero external services (`R = never`), allowing comprehensive BDD and property testing without mocks or emulators.
-* **Framework Boundary Isolation:** Framework packages (`@harness/es-contract`) must export only domain-agnostic event sourcing primitives (`EventMetadata`, `Decider`, `DeciderSpec`), keeping sample domain models (`Cart`, `Inventory`) isolated in test fixtures.
+* **Framework Boundary Isolation:** Framework packages (`@harness/es-contract`) must export only domain-agnostic event sourcing primitives (`EventMetadata`, `CommandResult`, `Decider`, `DeciderSpec`), keeping sample domain models (`Cart`, `Inventory`) isolated in test fixtures.
 * **Emmett-Style Given/When/Then DSL:** Developers must be able to specify aggregate behavior using partial event matching, typed failure assertion, and explicit no-op assertions (`[]`).
 * **Deterministic Verification:** Decider purity and error propagation must be statically enforceable by the harness graph linter (`checkEffectGraph`).
+* **Closed Discriminated Unions:** States and command outcomes must be modeled with closed tagged unions (`CommandResult` = `Created` | `Appended`, `CartState` = `Empty` | `Open` | `CheckedOut`), never with boolean flags or optional properties.
 
 ## Considered Options
 
@@ -38,15 +39,18 @@ Effect v4 lacks an active, idiomatic aggregate event-sourcing framework. Communi
 
 1. **Decider Signature Purity:** `decide` functions must have signature `(command: Command, state: State) => Effect.Effect<ReadonlyArray<Event>, Error, never>`.
 2. **State Reducer Purity:** `evolve` functions must be total, synchronous, pure functions `(state: State, event: Event) => State`.
-3. **No-Op Semantics:** When a command requires no state change, `decide` must return an empty array `[]`.
-4. **Framework Separation:** No e-commerce or specific domain logic may be exported by `@harness/es-contract`.
-5. **DSL Specifications:** Decider tests must use `DeciderSpec.for(decider).given(events).when(command).thenEvents(...) / thenNothing / thenFails(...)`.
+3. **No-Op & Idempotency Semantics:** When a command requires no state change (e.g. idempotent retries, or releasing an unheld reservation during saga compensation/rollback), `decide` must return an empty array `[]`. Confirming a non-existent hold is invalid and fails with a typed domain error (`ReservationNotFoundError`), whereas releasing a non-existent hold is a safe idempotent no-op.
+4. **Closed Discriminated Unions:** Framework and domain models forbid boolean lifecycle flags (e.g. `created: Schema.Boolean`, `checkedOut: Schema.Boolean`). `CommandResult` is represented as a closed tagged union (`Created` with `NonEmptyArray` & `Natural` stream version vs. `Appended` with `Array` & `Natural` stream version).
+5. **Framework Separation:** No e-commerce or specific domain logic may be exported by `@harness/es-contract`.
+6. **DSL Specifications:** Decider tests must use `DeciderSpec.for(decider).given(events).when(command).thenEvents(...) / thenNothing / thenFails(...)`.
 
 ## Rejected Alternatives
 
 ### 1 · Castore / Emmett Direct Adoption
 
-**Why rejected:** Castore (last released in April 2025) targets Effect v3 paradigms and lacks native `Schema.TaggedErrorClass` error channels and Effect tracing spans. Emmett lacks a permissive license and does not integrate natively with Effect's Fiber runtime or Layer graphs.
+**Why rejected:**
+* **Castore:** Plain TypeScript event sourcing library that predates Effect v3/v4. While community adapters existed for Effect, it is not built natively on Effect v4's `Schema`, `TaggedErrorClass`, or Fiber tracing, requiring bridge layers and losing compile-time type inference.
+* **Emmett:** Oskar Dudycz's plain TypeScript event-sourcing library with EventStoreDB/PostgreSQL focus, released under Apache 2.0. Emmett provides an excellent programming model that inspired `DeciderSpec`, but is designed for plain TypeScript runtimes without native Effect v4 Fiber, Schema, or Layer dependency injection.
 
 ## Consequences and Enforcement
 
@@ -54,6 +58,7 @@ Effect v4 lacks an active, idiomatic aggregate event-sourcing framework. Communi
 
 * Domain logic executes with zero dependencies (`R = never`), eliminating test flakiness and mocking overhead.
 * Framework consumers receive a clean, minimal dependency footprint without unneeded domain schemas.
+* Compile-time type safety ensures all states and outcomes are exhaustively handled via `ts-pattern` without boolean flag ambiguity.
 * Tests run in milliseconds under `@effect/vitest` without starting Cloudflare Workers or Miniflare instances.
 
 ### Negative Consequences and Trade-offs
@@ -65,5 +70,5 @@ Effect v4 lacks an active, idiomatic aggregate event-sourcing framework. Communi
 | Rule | Enforced By | Gate / Mechanism | Governed Symbols |
 |---|---|---|---|
 | Decider purity (`R = never`) | `libs/es/contract/src/decider.ts` | TypeScript 7 & `@effect/tsgo` | `Decider.run` |
-| Framework boundary isolation | `libs/es/contract/src/index.ts` | `oxlint` & `pnpm run verify` | `EventMetadata`, `Decider` |
-| BDD test assertions | `libs/es/contract/src/decider.ts` | `@effect/vitest` | `DeciderSpec` |
+| Framework boundary isolation | `libs/es/contract/src/index.ts` | `oxlint` & `pnpm run verify` | `libs/es/contract/src/index.ts` |
+| BDD test assertions | `libs/es/contract/src/decider.ts` | `@effect/vitest` | `Decider.run` |

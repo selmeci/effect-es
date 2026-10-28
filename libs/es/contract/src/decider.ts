@@ -77,10 +77,19 @@ export const Decider = {
   run: runDecider
 } as const
 
-export interface DeciderSpecWhen<State, Event, Error extends { readonly _tag: string }> {
+export type ExpectedEvent<Event extends { readonly _tag: string }> =
+  Event extends any
+    ? { readonly _tag: Event["_tag"] } & Partial<Event>
+    : never
+
+export interface DeciderSpecWhen<
+  State,
+  Event extends { readonly _tag: string },
+  Error extends { readonly _tag: string }
+> {
   readonly thenEvents: (
     expected:
-      | ReadonlyArray<Partial<Event>>
+      | ReadonlyArray<ExpectedEvent<Event>>
       | ((events: ReadonlyArray<Event>, newState: State) => void)
   ) => Effect.Effect<
     { readonly events: ReadonlyArray<Event>; readonly newState: State },
@@ -101,7 +110,7 @@ export interface DeciderSpecWhen<State, Event, Error extends { readonly _tag: st
 export interface DeciderSpecGiven<
   State,
   Command,
-  Event,
+  Event extends { readonly _tag: string },
   Error extends { readonly _tag: string }
 > {
   readonly when: (command: Command) => DeciderSpecWhen<State, Event, Error>
@@ -110,7 +119,7 @@ export interface DeciderSpecGiven<
 export interface DeciderSpecRunner<
   State,
   Command,
-  Event,
+  Event extends { readonly _tag: string },
   Error extends { readonly _tag: string }
 > {
   readonly given: (
@@ -153,7 +162,7 @@ export const DeciderSpec = {
   for: <
     State,
     Command,
-    Event,
+    Event extends { readonly _tag: string },
     Error extends { readonly _tag: string }
   >(
     decider: Decider<State, Command, Event, Error>
@@ -163,8 +172,8 @@ export const DeciderSpec = {
         thenEvents: (expected) =>
           Effect.gen(function* () {
             const priorState = decider.fold(pastEvents)
-            const events = yield* decider.decide(command, priorState)
-            const newState = decider.fold(events, priorState)
+            const result = yield* decider.run(command, priorState)
+            const { events, newState } = result
 
             if (typeof expected === "function") {
               expected(events, newState)
@@ -193,7 +202,8 @@ export const DeciderSpec = {
           }),
         thenNothing: Effect.gen(function* () {
           const priorState = decider.fold(pastEvents)
-          const events = yield* decider.decide(command, priorState)
+          const result = yield* decider.run(command, priorState)
+          const { events } = result
           if (events.length !== 0) {
             return yield* Effect.die(
               new Error(
@@ -218,36 +228,52 @@ export const DeciderSpec = {
                   )
                 )
               )
-              .with({ _tag: "Failure" }, (f) =>
-                Effect.gen(function* () {
-                  const cause = f.cause
-                  const failReasons = cause.reasons.filter(
-                    (r): r is Extract<(typeof cause.reasons)[number], { readonly _tag: "Fail" }> =>
-                      r._tag === "Fail"
+              .with({ _tag: "Failure" }, (f) => {
+                const cause = f.cause
+                const firstReason = cause.reasons[0]
+                if (!firstReason) {
+                  return Effect.die(
+                    new Error(
+                      `DeciderSpec.thenFails: expected typed failure "${expectedTag}", but cause has no reasons`
+                    )
                   )
-                  const firstFail = failReasons[0]
-                  if (!firstFail) {
-                    return yield* Effect.die(
+                }
+                return match(firstReason)
+                  .with({ _tag: "Die" }, (d) =>
+                    Effect.die(
                       new Error(
-                        `DeciderSpec.thenFails: expected typed failure "${expectedTag}", but exited with defect/interruption`
+                        `DeciderSpec.thenFails: expected typed failure "${expectedTag}", but exited with defect: ${String(d.defect)}`
                       )
                     )
-                  }
-                  const actualTag = firstFail.error._tag
-                  if (actualTag !== expectedTag) {
-                    return yield* Effect.die(
+                  )
+                  .with({ _tag: "Interrupt" }, (i) =>
+                    Effect.die(
                       new Error(
-                        `DeciderSpec.thenFails: expected error tag "${expectedTag}", but got "${actualTag}"`
+                        `DeciderSpec.thenFails: expected typed failure "${expectedTag}", but was interrupted: ${String(i.fiberId)}`
                       )
                     )
-                  }
-                  const narrowed = firstFail.error as Extract<Error, { readonly _tag: Tag }>
-                  if (check) {
-                    check(narrowed)
-                  }
-                  return narrowed
-                })
-              )
+                  )
+                  .with({ _tag: "Fail" }, (fail) => {
+                    const err = fail.error
+                    const actualTag = err._tag
+                    return match(actualTag)
+                      .with(expectedTag, () => {
+                        const narrowed = err as Extract<Error, { readonly _tag: Tag }>
+                        if (check) {
+                          check(narrowed)
+                        }
+                        return Effect.succeed(narrowed)
+                      })
+                      .otherwise(() =>
+                        Effect.die(
+                          new Error(
+                            `DeciderSpec.thenFails: expected error tag "${expectedTag}", but got "${actualTag}"`
+                          )
+                        )
+                      )
+                  })
+                  .exhaustive()
+              })
               .exhaustive()
           })
       })
