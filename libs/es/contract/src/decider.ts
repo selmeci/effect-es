@@ -12,21 +12,68 @@ export interface DeciderDefinition<State, Command, Event, Error> {
 export interface Decider<State, Command, Event, Error>
   extends DeciderDefinition<State, Command, Event, Error> {
   readonly fold: (events: Iterable<Event>, initial?: State) => State
+  readonly run: (
+    command: Command,
+    state?: State
+  ) => Effect.Effect<
+    { readonly events: ReadonlyArray<Event>; readonly newState: State },
+    Error,
+    never
+  >
 }
+
+export const runDecider = Effect.fn("Decider.run")(function* <
+  State,
+  Command,
+  Event,
+  Error
+>(
+  decider: DeciderDefinition<State, Command, Event, Error>,
+  command: Command,
+  state: State
+): Effect.fn.Return<
+  { readonly events: ReadonlyArray<Event>; readonly newState: State },
+  Error
+> {
+  const events = yield* decider.decide(command, state)
+  let current = state
+  for (const event of events) {
+    current = decider.evolve(current, event)
+  }
+  return { events, newState: current }
+})
 
 export const Decider = {
   make: <State, Command, Event, Error>(
     definition: DeciderDefinition<State, Command, Event, Error>
-  ): Decider<State, Command, Event, Error> => ({
-    ...definition,
-    fold: (events: Iterable<Event>, initial: State = definition.initialState): State => {
+  ): Decider<State, Command, Event, Error> => {
+    const fold = (
+      events: Iterable<Event>,
+      initial: State = definition.initialState
+    ): State => {
       let current = initial
       for (const event of events) {
         current = definition.evolve(current, event)
       }
       return current
     }
-  })
+
+    const run = (
+      command: Command,
+      state: State = definition.initialState
+    ): Effect.Effect<
+      { readonly events: ReadonlyArray<Event>; readonly newState: State },
+      Error,
+      never
+    > => runDecider(definition, command, state)
+
+    return {
+      ...definition,
+      fold,
+      run
+    }
+  },
+  run: runDecider
 } as const
 
 export interface DeciderSpecWhen<State, Event, Error extends { readonly _tag: string }> {
