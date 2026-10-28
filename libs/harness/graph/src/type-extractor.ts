@@ -701,9 +701,21 @@ export const extractTypeAwareGraphFromSource = (
         ) {
           continue
         }
-        const candidates = [bin.getLeft(), bin.getRight()]
-        for (const side of candidates) {
+        const candidatePairs = [
+          { side: bin.getLeft(), other: bin.getRight() },
+          { side: bin.getRight(), other: bin.getLeft() }
+        ]
+        for (const { side, other } of candidatePairs) {
           if (Node.isPropertyAccessExpression(side)) {
+            const isOtherLiteral =
+              Node.isStringLiteral(other) ||
+              Node.isNumericLiteral(other) ||
+              Node.isNoSubstitutionTemplateLiteral(other) ||
+              other.getKind() === SyntaxKind.TrueKeyword ||
+              other.getKind() === SyntaxKind.FalseKeyword
+            if (!isOtherLiteral) {
+              continue
+            }
             const objExpr = side.getExpression()
             const propName = side.getName()
             const objType = objExpr.getType()
@@ -829,11 +841,17 @@ const findWorkspaceSrcFiles = (repoRoot: string): ReadonlyArray<string> => {
         e.name === "node_modules" ||
         e.name === "dist" ||
         e.name === ".nx" ||
-        e.name === "test" ||
         e.name === "repos" ||
         e.name === ".git" ||
         e.name === ".harness"
       ) {
+        continue
+      }
+      if (e.name === "test") {
+        const fixturesDir = path.join(current, "test", "fixtures")
+        if (fs.existsSync(fixturesDir)) {
+          walk(fixturesDir)
+        }
         continue
       }
       const full = path.join(current, e.name)
@@ -846,7 +864,7 @@ const findWorkspaceSrcFiles = (repoRoot: string): ReadonlyArray<string> => {
         !e.name.endsWith(".config.ts")
       ) {
         const rel = path.relative(repoRoot, full).replace(/\\/g, "/")
-        if (rel.includes("/src/") || rel.endsWith("alchemy.run.ts")) {
+        if (rel.includes("/src/") || rel.includes("/test/fixtures/") || rel.endsWith("alchemy.run.ts")) {
           results.push(rel)
         }
       }
