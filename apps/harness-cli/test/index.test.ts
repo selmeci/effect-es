@@ -470,7 +470,7 @@ describe("harness-cli v2 commands", () => {
   })
 
   describe("doctor and session", () => {
-    it("reports node version and model warm status", async () => {
+    it("reports node version, effectLspOk, and model warm status", async () => {
       const warmLayer = makeMockDecisionModelLayer({ fitsAnyProb: 0.9, blockLabel: "effect" })
       const doc = await runCli(["doctor"], { decisionLayer: warmLayer })
       expect(doc.exitCode).toBe(0)
@@ -479,6 +479,7 @@ describe("harness-cli v2 commands", () => {
         nodeVersion: process.versions.node,
         nodeOk: true,
         snapshotDirOk: true,
+        effectLspOk: true,
         omnigraphInitialized: expect.any(Boolean),
         modelWarm: true
       })
@@ -491,6 +492,7 @@ describe("harness-cli v2 commands", () => {
         nodeVersion: process.versions.node,
         nodeOk: true,
         snapshotDirOk: true,
+        effectLspOk: true,
         omnigraphInitialized: expect.any(Boolean),
         modelWarm: false
       })

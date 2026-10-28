@@ -800,6 +800,26 @@ const handleDoctorOrSession = (
     const omnigraphDir = join(harnessDir, "omnigraph")
     const omnigraphInitialized = existsSync(omnigraphDir)
 
+    const workspaceRoot = findWorkspaceRoot()
+    const tsconfigBasePath = existsSync(join(repoRoot, "tsconfig.base.json"))
+      ? join(repoRoot, "tsconfig.base.json")
+      : join(workspaceRoot, "tsconfig.base.json")
+    const tsgoPkgPath = existsSync(
+      join(repoRoot, "node_modules", "@effect", "tsgo", "package.json")
+    )
+      ? join(repoRoot, "node_modules", "@effect", "tsgo", "package.json")
+      : join(workspaceRoot, "node_modules", "@effect", "tsgo", "package.json")
+    const effectLspOk = yield* Effect.try({
+      try: () => {
+        if (!existsSync(tsconfigBasePath) || !existsSync(tsgoPkgPath)) {
+          return false
+        }
+        const tsconfigRaw = readFileSync(tsconfigBasePath, "utf-8")
+        return tsconfigRaw.includes("@effect/language-service")
+      },
+      catch: () => false
+    }).pipe(Effect.orElseSucceed(() => false))
+
     const warmUpOpt = yield* DecisionModel.decide(IdiomRouterV1, {
       input: { planStep: "Initialize session" }
     }).pipe(
@@ -851,7 +871,7 @@ const handleDoctorOrSession = (
       stampValid: effectiveStampValid
     })
 
-    const ok = nodeOk && snapshotDirOk
+    const ok = nodeOk && snapshotDirOk && effectLspOk
 
     if (isAntigravity) {
       return {
@@ -869,6 +889,7 @@ const handleDoctorOrSession = (
         nodeVersion: process.versions.node,
         nodeOk,
         snapshotDirOk,
+        effectLspOk,
         omnigraphInitialized,
         modelWarm,
         handoff,
@@ -878,7 +899,9 @@ const handleDoctorOrSession = (
           grade: telemetryReport.grade
         }
       }),
-      stderr: ok ? "" : `Doctor check failed: nodeOk=${nodeOk}, snapshotDirOk=${snapshotDirOk}`
+      stderr: ok
+        ? ""
+        : `Doctor check failed: nodeOk=${nodeOk}, snapshotDirOk=${snapshotDirOk}, effectLspOk=${effectLspOk}`
     }
   })
 

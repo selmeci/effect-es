@@ -64,6 +64,10 @@ The plugin provides three complementary MCP servers in `mcp_config.json`:
 - **`harness_tests_reaching`** (`symbolOrSpan: string`): Discovers all `@effect/vitest` test cases (`VitestCase`) that exercise the target symbol or span via `ExercisesSpan` and transitive `TracedCall` edges.
 - **`harness_structural_search`** (`pattern: string`): Performs fast AST pattern matching using `@ast-grep/napi`.
 - **`harness_route`** (`planStep: string`): Consults the advisory `clef-flash` idiom router to determine the optimal pattern doc in `agent-patterns/*.md`.
+- **`harness_lsp_diagnostics`** (`file?: string`, `project?: string`): Runs `@effect/tsgo` (`@effect/language-service`) strict JSON diagnostics on a target file or tsconfig project.
+- **`harness_ontology_why`** / **`harness_ontology_impact`** / **`harness_ontology_check`**: Queries ArchiMate 3.2 cross-layer traceability (Motivation $\leftrightarrow$ Implementation) and checks cross-layer invariants and semantic conflicts.
+- **`harness_gq_query`** (`queryName`, `params?`, `branch?`): Executes canonical Omnigraph `.gq` queries from `libs/harness/graph/queries/harness.gq`.
+- **`harness_telemetry_report`** (`format?: "json" | "markdown"`): Generates the session observability scorecard and tool-usage health report.
 
 ### `@modernrelay/omnigraph-mcp` (Property Graph & Branching)
 

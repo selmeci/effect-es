@@ -141,7 +141,7 @@ const DETERMINISTIC_TRIAGE_RULES: ReadonlyArray<{
     pattern: "Suppressing `effecttsgo/*`",
     result: {
       kind: "mechanical",
-      hint: "Suppressing effecttsgo/* or harness/* diagnostics with oxlint-disable/eslint-disable is banned — fix the underlying violation instead."
+      hint: "Suppressing effecttsgo/* (@effect/language-service) or harness/* diagnostics with oxlint-disable/eslint-disable/@effect-diagnostics is banned — fix the underlying violation instead."
     }
   }
 ]

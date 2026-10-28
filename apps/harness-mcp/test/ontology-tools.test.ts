@@ -342,5 +342,44 @@ status: accepted
       expect(res.report.kpis.graphDiscoveryCalls).toBe(2)
     })
   )
+
+  it.effect("executes harness_lsp_diagnostics and records gate telemetry", () =>
+    Effect.gen(function* () {
+      const tmpDir = mkdtempSync(join(tmpdir(), "harness-mcp-lsp-"))
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          rmSync(tmpDir, { recursive: true, force: true })
+        })
+      )
+
+      const rawClean = yield* executeToolEffect(
+        "harness_lsp_diagnostics",
+        { file: "libs/sample/domain/src/index.ts" },
+        {
+          repoRoot: tmpDir,
+          lspDiagnosticsRunner: () => ({
+            clean: true,
+            diagnostics: [],
+            summary: {
+              filesChecked: 1,
+              filesWithoutPlugin: 0,
+              totalFiles: 1,
+              errors: 0,
+              warnings: 0,
+              messages: 0
+            }
+          })
+        }
+      )
+
+      const cleanRes = rawClean as {
+        readonly clean: boolean
+        readonly summary: { readonly filesChecked: number; readonly errors: number }
+      }
+      expect(cleanRes.clean).toBe(true)
+      expect(cleanRes.summary.filesChecked).toBe(1)
+      expect(cleanRes.summary.errors).toBe(0)
+    })
+  )
 })
 

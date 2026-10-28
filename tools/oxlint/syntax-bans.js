@@ -202,7 +202,7 @@ function isEffectRetryCall(node) {
 }
 
 const effectTsgoDisableMessage =
-  "Suppressing `effecttsgo/*` (@effect/language-service) or `harness/*` diagnostics with oxlint-disable/eslint-disable is banned — fix the underlying violation instead."
+  "Suppressing `effecttsgo/*` (@effect/language-service) or `harness/*` diagnostics with oxlint-disable/eslint-disable/@effect-diagnostics is banned — fix the underlying violation instead."
 const tsSuppressionMessage =
   "TypeScript suppression directives (@ts-ignore, @ts-expect-error, @ts-nocheck) are banned in production source files — fix the underlying type error instead."
 const testTsIgnoreMessage =
@@ -270,7 +270,11 @@ const syntaxBans = {
           context.sourceCode && typeof context.sourceCode.text === "string"
             ? context.sourceCode.text
             : ""
-        if (/^\s*(\/\/|\/\*)\s*(oxlint-disable|eslint-disable)[^\n]*(effecttsgo\/|harness\/)/m.test(text) || /oxlint-disable[^\n]*effecttsgo\//.test(text)) {
+        if (
+          /^\s*(\/\/|\/\*)\s*(oxlint-disable|eslint-disable)[^\n]*(effecttsgo\/|harness\/)/m.test(text) ||
+          /oxlint-disable[^\n]*effecttsgo\//.test(text) ||
+          /^\s*(\/\/|\/\*)\s*@effect-diagnostics(-next-line)?\b/m.test(text)
+        ) {
           context.report({ node, message: effectTsgoDisableMessage })
         }
         if (/^\s*(\/\/|\/\*)\s*@ts-(ignore|expect-error|nocheck)\b/m.test(text)) {
@@ -391,7 +395,10 @@ const testIntegrity = {
           context.sourceCode && typeof context.sourceCode.text === "string"
             ? context.sourceCode.text
             : ""
-        if (/^\s*(\/\/|\/\*)\s*(oxlint-disable|eslint-disable)[^\n]*(harness\/test-integrity|effecttsgo\/)/m.test(text)) {
+        if (
+          /^\s*(\/\/|\/\*)\s*(oxlint-disable|eslint-disable)[^\n]*(harness\/test-integrity|effecttsgo\/)/m.test(text) ||
+          /^\s*(\/\/|\/\*)\s*@effect-diagnostics(-next-line)?\b/m.test(text)
+        ) {
           context.report({ node, message: effectTsgoDisableMessage })
         }
         if (/^\s*(\/\/|\/\*)\s*@ts-(ignore|nocheck)\b/m.test(text)) {

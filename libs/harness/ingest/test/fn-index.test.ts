@@ -358,5 +358,38 @@ describe("Effect.fn syntactic index", () => {
       })
       expect(reports).toHaveLength(0)
     }
+
+    // 11. Rejects @effect-diagnostics and @effect-diagnostics-next-line directives in syntax-bans and test-integrity
+    {
+      const directivePrefix = "@effect-" + "diagnostics"
+      const reports: Array<{ message: string }> = []
+      const visitor = rule.create({
+        filename: "/repo/libs/sample/domain/src/index.ts",
+        sourceCode: {
+          text: `// ${directivePrefix} floatingEffect:off\nexport const x = 1\n`
+        },
+        report: (r: { message: string }) => {
+          reports.push(r)
+        }
+      })
+      visitor.Program({ type: "Program" })
+      expect(reports).toHaveLength(1)
+      expect(reports[0]?.message).toContain(directivePrefix)
+
+      const testRule = syntaxBansPlugin.rules["test-integrity"]
+      const testReports: Array<{ message: string }> = []
+      const testVisitor = testRule.create({
+        filename: "/repo/libs/sample/domain/test/index.test.ts",
+        sourceCode: {
+          text: `// ${directivePrefix}-next-line lazyEffect:off\n`
+        },
+        report: (r: { message: string }) => {
+          testReports.push(r)
+        }
+      })
+      testVisitor.Program({ type: "Program" })
+      expect(testReports).toHaveLength(1)
+      expect(testReports[0]?.message).toContain(directivePrefix)
+    }
   })
 })

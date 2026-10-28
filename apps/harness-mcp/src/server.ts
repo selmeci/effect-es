@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -50,12 +51,47 @@ export class UnknownToolError extends Schema.TaggedError<UnknownToolError>()(
   }
 ) {}
 
+export interface LspDiagnosticsReport {
+  readonly clean: boolean
+  readonly diagnostics: ReadonlyArray<unknown>
+  readonly summary: {
+    readonly filesChecked: number
+    readonly filesWithoutPlugin: number
+    readonly totalFiles: number
+    readonly errors: number
+    readonly warnings: number
+    readonly messages: number
+  }
+}
+
+const LspDiagnosticsSummarySchema = Schema.Struct({
+  filesChecked: Schema.Int,
+  filesWithoutPlugin: Schema.Int,
+  totalFiles: Schema.Int,
+  errors: Schema.Int,
+  warnings: Schema.Int,
+  messages: Schema.Int
+})
+
+const LspDiagnosticsPayloadSchema = Schema.Struct({
+  diagnostics: Schema.Array(Schema.Unknown),
+  summary: LspDiagnosticsSummarySchema
+})
+
+const decodeLspDiagnosticsPayload = Schema.decodeOption(
+  Schema.fromJsonString(LspDiagnosticsPayloadSchema)
+)
+
 export interface ServerOptions {
   readonly graph?: HarnessGraph
   readonly snapshotPath?: string
   readonly decisionLayer?: Layer.Layer<DecisionModel.DecisionModel>
   readonly repoRoot?: string
   readonly governanceDocs?: ReadonlyArray<GovernanceDocReference>
+  readonly lspDiagnosticsRunner?: (input: {
+    readonly file?: string | undefined
+    readonly project?: string | undefined
+  }) => LspDiagnosticsReport
 }
 
 const findRepoRoot = (startDir: string): string => {
@@ -102,6 +138,76 @@ const resolveGraph = (options?: ServerOptions): Effect.Effect<HarnessGraph> => {
     )
   )
 }
+
+const runDefaultLspDiagnostics = (
+  repoRoot: string,
+  input: {
+    readonly file?: string | undefined
+    readonly project?: string | undefined
+  }
+): Effect.Effect<LspDiagnosticsReport> =>
+  Effect.try(() => {
+    const cliArgs = ["diagnostics", "--strict", "--format", "json"]
+    if (input.file !== undefined && input.file.trim().length > 0) {
+      const resolvedFile = path.isAbsolute(input.file)
+        ? input.file
+        : path.resolve(repoRoot, input.file)
+      cliArgs.push("--file", resolvedFile)
+    } else {
+      const rawProject = input.project ?? "tsconfig.base.json"
+      const resolvedProject = path.isAbsolute(rawProject)
+        ? rawProject
+        : path.resolve(repoRoot, rawProject)
+      cliArgs.push("--project", resolvedProject)
+    }
+
+    const binPath = path.join(findRepoRoot(repoRoot), "node_modules", ".bin", "effect-tsgo")
+    const proc = spawnSync(binPath, cliArgs, {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      timeout: 30_000
+    })
+    const stdout = (proc.stdout ?? "").trim()
+    const decoded = decodeLspDiagnosticsPayload(stdout)
+    if (Option.isSome(decoded)) {
+      const { diagnostics, summary } = decoded.value
+      return {
+        clean:
+          summary.errors === 0 &&
+          summary.warnings === 0 &&
+          summary.filesWithoutPlugin === 0,
+        diagnostics,
+        summary
+      } satisfies LspDiagnosticsReport
+    }
+    return {
+      clean: false,
+      diagnostics: proc.stderr ? [proc.stderr.trim()] : [],
+      summary: {
+        filesChecked: 0,
+        filesWithoutPlugin: 0,
+        totalFiles: 0,
+        errors: 1,
+        warnings: 0,
+        messages: 0
+      }
+    } satisfies LspDiagnosticsReport
+  }).pipe(
+    Effect.orElseSucceed(
+      (): LspDiagnosticsReport => ({
+        clean: false,
+        diagnostics: [],
+        summary: {
+          filesChecked: 0,
+          filesWithoutPlugin: 0,
+          totalFiles: 0,
+          errors: 1,
+          warnings: 0,
+          messages: 0
+        }
+      })
+    )
+  )
 
 export const executeToolEffect = (
   toolName: string,
@@ -213,6 +319,17 @@ export const executeToolEffect = (
         }).pipe(Effect.provide(OmnigraphSync.Live))
         break
       }
+      case "harness_lsp_diagnostics": {
+        const file = (args as { file?: string | undefined }).file
+        const project = (args as { project?: string | undefined }).project
+        const root = options?.repoRoot ?? findRepoRoot(process.cwd())
+        if (options?.lspDiagnosticsRunner !== undefined) {
+          result = options.lspDiagnosticsRunner({ file, project })
+        } else {
+          result = yield* runDefaultLspDiagnostics(root, { file, project })
+        }
+        break
+      }
       case "harness_telemetry_report": {
         const format = (args as { format?: "json" | "markdown" | undefined }).format
         const root = options?.repoRoot ?? findRepoRoot(process.cwd())
@@ -241,6 +358,8 @@ export const executeToolEffect = (
         category = "ontology"
       } else if (toolName === "harness_route") {
         category = "routing"
+      } else if (toolName === "harness_lsp_diagnostics") {
+        category = "gate"
       } else {
         category = "graph_query"
       }
@@ -263,6 +382,14 @@ export const executeToolEffect = (
       let outcome: TelemetryOutcome = "ok"
       if (toolName === "harness_gq_query" && engineSource === "memory-fallback") {
         outcome = "fallback"
+      } else if (
+        toolName === "harness_lsp_diagnostics" &&
+        typeof result === "object" &&
+        result !== null &&
+        "clean" in result &&
+        result.clean === false
+      ) {
+        outcome = "fail"
       } else {
         outcome = "ok"
       }
@@ -455,6 +582,29 @@ export const createServer = (options?: ServerOptions): McpServer => {
     (args) =>
       Effect.runPromise(
         executeToolEffect("harness_gq_query", args, options).pipe(
+          Effect.map((data) => ({
+            content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
+          }))
+        )
+      )
+  )
+
+  server.tool(
+    "harness_lsp_diagnostics",
+    "Run Effect Language Service (@effect/tsgo) strict JSON diagnostics on a specific file or tsconfig project",
+    {
+      file: z
+        .string()
+        .optional()
+        .describe("Optional file path to check for Effect Language Service diagnostics"),
+      project: z
+        .string()
+        .optional()
+        .describe("Optional tsconfig.json path to check (defaults to tsconfig.base.json)")
+    },
+    (args) =>
+      Effect.runPromise(
+        executeToolEffect("harness_lsp_diagnostics", args, options).pipe(
           Effect.map((data) => ({
             content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
           }))
