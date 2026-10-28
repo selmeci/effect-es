@@ -161,6 +161,28 @@ export const extractTypeAwareGraphFromSource = (
   const repoRoot = options?.repoRoot ?? resolveRepoRoot(process.cwd())
   const graphNodeModules = path.join(repoRoot, "libs/harness/graph/node_modules")
 
+  const dynamicPaths: Record<string, Array<string>> = {
+    effect: [path.join(graphNodeModules, "effect")],
+    "effect/*": [path.join(graphNodeModules, "effect/*")],
+    "@harness/gates": [path.join(repoRoot, "libs/harness/gates/src/index.ts")],
+    "@harness/sample-contract": [path.join(repoRoot, "libs/sample/contract/src/index.ts")],
+    "@harness/sample-service": [path.join(repoRoot, "libs/sample/service/src/index.ts")],
+    "@harness/sample-domain": [path.join(repoRoot, "libs/sample/domain/src/index.ts")],
+    "@harness/sample-infra": [path.join(repoRoot, "libs/sample/infra/src/index.ts")]
+  }
+
+  const libsDir = path.join(repoRoot, "libs")
+  if (fs.existsSync(libsDir)) {
+    for (const scopeEntry of fs.readdirSync(libsDir, { withFileTypes: true })) {
+      if (!scopeEntry.isDirectory() || scopeEntry.name === "harness") continue
+      const scopeDir = path.join(libsDir, scopeEntry.name)
+      for (const tier of ["contract", "service", "domain", "infra"]) {
+        const entryFile = path.join(scopeDir, tier, "src", "index.ts")
+        dynamicPaths[`@harness/${scopeEntry.name}-${tier}`] = [entryFile]
+      }
+    }
+  }
+
   const project = new Project({
     compilerOptions: {
       target: ts.ScriptTarget.ES2023,
@@ -169,15 +191,7 @@ export const extractTypeAwareGraphFromSource = (
       strict: true,
       esModuleInterop: true,
       skipLibCheck: true,
-      paths: {
-        effect: [path.join(graphNodeModules, "effect")],
-        "effect/*": [path.join(graphNodeModules, "effect/*")],
-        "@harness/gates": [path.join(repoRoot, "libs/harness/gates/src/index.ts")],
-        "@harness/sample-contract": [path.join(repoRoot, "libs/sample/contract/src/index.ts")],
-        "@harness/sample-service": [path.join(repoRoot, "libs/sample/service/src/index.ts")],
-        "@harness/sample-domain": [path.join(repoRoot, "libs/sample/domain/src/index.ts")],
-        "@harness/sample-infra": [path.join(repoRoot, "libs/sample/infra/src/index.ts")]
-      }
+      paths: dynamicPaths
     }
   })
 

@@ -600,6 +600,16 @@ const handleVerify = (
       }
     }
 
+    const snapshotPath = join(repoRoot, ".harness", "graph-snapshot.json")
+
+    yield* syncToOmnigraphAndSnapshot(graph, {
+      branch: "impl/current",
+      snapshotPath
+    }).pipe(
+      Effect.provide(OmnigraphSync.Live),
+      Effect.orElseSucceed(() => ({ syncedToOmnigraph: false, snapshotPath }))
+    )
+
     if (!options?.skipSubprocessVerify && existsSync(join(repoRoot, "package.json"))) {
       const nxArgs = resolveNxAffectedArgs(repoRoot, ["verify"])
       const subprocessErr = yield* Effect.try({
@@ -639,16 +649,6 @@ const handleVerify = (
         }
       }
     }
-
-    const snapshotPath = join(repoRoot, ".harness", "graph-snapshot.json")
-
-    yield* syncToOmnigraphAndSnapshot(graph, {
-      branch: "impl/current",
-      snapshotPath
-    }).pipe(
-      Effect.provide(OmnigraphSync.Live),
-      Effect.orElseSucceed(() => ({ syncedToOmnigraph: false, snapshotPath }))
-    )
 
     const stamp = writeVerifyStamp(repoRoot, "impl/current")
     return { exitCode: 0, stdout: JSON.stringify(stamp), stderr: "" }
