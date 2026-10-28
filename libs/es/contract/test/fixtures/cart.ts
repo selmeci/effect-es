@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect"
+import { match } from "ts-pattern"
 import { Decider } from "../../src/decider.js"
 
 // ============================================================================
@@ -120,48 +121,45 @@ export const initialCartState: CartState = {
   checkedOutAt: null
 }
 
-export const evolveCart = (state: CartState, event: CartEvent): CartState => {
-  switch (event._tag) {
-    case "ItemAdded": {
-      const existing = state.items.find((item) => item.sku === event.sku)
+export const evolveCart = (state: CartState, event: CartEvent): CartState =>
+  match(event)
+    .with({ _tag: "ItemAdded" }, (e) => {
+      const existing = state.items.find((item) => item.sku === e.sku)
       const items = existing
         ? state.items.map((item) =>
-            item.sku === event.sku
-              ? { sku: item.sku, qty: item.qty + event.qty }
+            item.sku === e.sku
+              ? { sku: item.sku, qty: item.qty + e.qty }
               : item
           )
-        : [...state.items, { sku: event.sku, qty: event.qty }]
+        : [...state.items, { sku: e.sku, qty: e.qty }]
       return {
         ...state,
-        cartId: event.cartId,
-        customerId: event.customerId,
+        cartId: e.cartId,
+        customerId: e.customerId,
         items
       }
-    }
-    case "ItemRemoved": {
+    })
+    .with({ _tag: "ItemRemoved" }, (e) => {
       const items = state.items.flatMap((item) => {
-        if (item.sku !== event.sku) {
+        if (item.sku !== e.sku) {
           return [item]
         }
-        const remainingQty = item.qty - event.qty
+        const remainingQty = item.qty - e.qty
         return remainingQty <= 0 ? [] : [{ sku: item.sku, qty: remainingQty }]
       })
       return {
         ...state,
-        cartId: event.cartId,
+        cartId: e.cartId,
         items
       }
-    }
-    case "CheckedOut": {
-      return {
-        ...state,
-        cartId: event.cartId,
-        checkedOut: true,
-        checkedOutAt: event.at
-      }
-    }
-  }
-}
+    })
+    .with({ _tag: "CheckedOut" }, (e) => ({
+      ...state,
+      cartId: e.cartId,
+      checkedOut: true,
+      checkedOutAt: e.at
+    }))
+    .exhaustive()
 
 export const decideCart = (
   command: CartCommand,
@@ -176,58 +174,58 @@ export const decideCart = (
       return yield* new CartAlreadyCheckedOutError({ cartId: command.cartId })
     }
 
-    switch (command._tag) {
-      case "AddCartItem": {
-        if (command.qty <= 0) {
-          return yield* new InvalidQuantityError({
-            sku: command.sku,
-            qty: command.qty
+    return yield* match(command)
+      .with({ _tag: "AddCartItem" }, (cmd) => {
+        if (cmd.qty <= 0) {
+          return new InvalidQuantityError({
+            sku: cmd.sku,
+            qty: cmd.qty
           })
         }
-        return [
+        return Effect.succeed([
           ItemAdded.make({
             version: 1,
-            cartId: command.cartId,
-            customerId: command.customerId,
-            sku: command.sku,
-            qty: command.qty
+            cartId: cmd.cartId,
+            customerId: cmd.customerId,
+            sku: cmd.sku,
+            qty: cmd.qty
           })
-        ]
-      }
-      case "RemoveCartItem": {
-        if (command.qty <= 0) {
-          return yield* new InvalidQuantityError({
-            sku: command.sku,
-            qty: command.qty
+        ])
+      })
+      .with({ _tag: "RemoveCartItem" }, (cmd) => {
+        if (cmd.qty <= 0) {
+          return new InvalidQuantityError({
+            sku: cmd.sku,
+            qty: cmd.qty
           })
         }
-        const existing = state.items.find((item) => item.sku === command.sku)
+        const existing = state.items.find((item) => item.sku === cmd.sku)
         if (!existing) {
-          return []
+          return Effect.succeed([])
         }
-        const removedQty = Math.min(command.qty, existing.qty)
-        return [
+        const removedQty = Math.min(cmd.qty, existing.qty)
+        return Effect.succeed([
           ItemRemoved.make({
             version: 1,
-            cartId: command.cartId,
-            sku: command.sku,
+            cartId: cmd.cartId,
+            sku: cmd.sku,
             qty: removedQty
           })
-        ]
-      }
-      case "CheckoutCart": {
+        ])
+      })
+      .with({ _tag: "CheckoutCart" }, (cmd) => {
         if (state.items.length === 0) {
-          return yield* new EmptyCartCheckoutError({ cartId: command.cartId })
+          return new EmptyCartCheckoutError({ cartId: cmd.cartId })
         }
-        return [
+        return Effect.succeed([
           CheckedOut.make({
             version: 1,
-            cartId: command.cartId,
-            at: command.at
+            cartId: cmd.cartId,
+            at: cmd.at
           })
-        ]
-      }
-    }
+        ])
+      })
+      .exhaustive()
   })
 
 export const CartDecider = Decider.make({
