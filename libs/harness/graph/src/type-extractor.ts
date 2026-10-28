@@ -176,7 +176,11 @@ export const extractTypeAwareGraphFromSource = (
         "@harness/sample-contract": [path.join(repoRoot, "libs/sample/contract/src/index.ts")],
         "@harness/sample-service": [path.join(repoRoot, "libs/sample/service/src/index.ts")],
         "@harness/sample-domain": [path.join(repoRoot, "libs/sample/domain/src/index.ts")],
-        "@harness/sample-infra": [path.join(repoRoot, "libs/sample/infra/src/index.ts")]
+        "@harness/sample-infra": [path.join(repoRoot, "libs/sample/infra/src/index.ts")],
+        "@harness/es-contract": [path.join(repoRoot, "libs/es/contract/src/index.ts")],
+        "@harness/es-service": [path.join(repoRoot, "libs/es/service/src/index.ts")],
+        "@harness/es-domain": [path.join(repoRoot, "libs/es/domain/src/index.ts")],
+        "@harness/es-infra": [path.join(repoRoot, "libs/es/infra/src/index.ts")]
       }
     }
   })

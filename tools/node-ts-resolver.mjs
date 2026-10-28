@@ -13,7 +13,11 @@ const WORKSPACE_PACKAGE_PATHS = {
   "@harness/sample-contract": "libs/sample/contract/src/index.ts",
   "@harness/sample-service": "libs/sample/service/src/index.ts",
   "@harness/sample-domain": "libs/sample/domain/src/index.ts",
-  "@harness/sample-infra": "libs/sample/infra/src/index.ts"
+  "@harness/sample-infra": "libs/sample/infra/src/index.ts",
+  "@harness/es-contract": "libs/es/contract/src/index.ts",
+  "@harness/es-service": "libs/es/service/src/index.ts",
+  "@harness/es-domain": "libs/es/domain/src/index.ts",
+  "@harness/es-infra": "libs/es/infra/src/index.ts"
 }
 
 export async function resolve(specifier, context, nextResolve) {
