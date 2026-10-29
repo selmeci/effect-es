@@ -8,12 +8,12 @@ Planning in the Effect-TS Engineering Harness adheres to **Plan-as-Code**. Befor
 
 ## Plan-as-Code Mapping Table
 
-Every feature plan must map each concern to one of the 16 Effect v4 + Alchemy v2 building blocks below:
+Every feature plan must map each concern to one of the 18 Effect v4 + Alchemy v2 building blocks below:
 
 | # | Building Block | Effect / Alchemy Primitive | Package Boundary | Usage & Skeletoneering Pattern | Verification & Enforcement Gate |
 |---|---|---|---|---|---|
 | 1 | **Schema** | `Schema.Struct`, `Schema.Class`, `Schema.Int`, `Schema.String` | `type:contract` | Validate domain inputs, command payloads, and entity boundaries without raw parsing. | `oxlint` syntax bans on raw `JSON.parse`; typecheck boundary validation. |
-| 2 | **TaggedError** | `Schema.TaggedErrorClass`, `Data.TaggedError` | `type:contract` | Define typed domain and infrastructure errors; yield with `return yield* new MyError(...)`. | Ban on `throw`; catchable via `Effect.catchTag` / `Effect.catchTags`. |
+| 2 | **TaggedError** | `Schema.TaggedError<Self>()("Tag", { ... })`, `Data.TaggedError` | `type:contract` | Define typed domain and infrastructure errors; yield with `return yield* new MyError(...)`. | Ban on `throw`; catchable via `Effect.catchTag` / `Effect.catchTags`. |
 | 3 | **Context.Service** | `Context.Service<Self, Interface>()("tag")` | `type:service` | Define abstract capabilities and repositories decoupled from infrastructure. | `effect-graph:check` verifies `R` requirements do not leak infra tags. |
 | 4 | **Layer** | `Layer.effect`, `Layer.succeed`, `Layer.scoped` | `type:infra` / `type:service` | Compose dependency graph and manage service wiring and lifecycles. | `Graph.findCycle` detects cyclic layer dependencies at compile time. |
 | 5 | **Drizzle D1** | `drizzle-orm/effect-d1`, `@effect/sql-d1`, `sqliteTable` | `type:infra` | Serverless SQLite relational persistence; decode rows into `type:contract` Schemas. | Drizzle imports restricted to `type:infra`; migration drift check in CI. |
@@ -29,6 +29,7 @@ Every feature plan must map each concern to one of the 16 Effect v4 + Alchemy v2
 | 15 | **Test Layers** | `Test.make`, in-memory repos, mock bindings | `test/**` | Mock dependencies and in-memory stores for isolated, fast unit tests. | `@effect/vitest` (`it.effect`, `it.scoped`) executes tests deterministically. |
 | 16 | **Verification** | `harness verify`, `nx affected -t verify` | Root tooling | Composite check: typecheck, lint, test, dual-graph trace indexing, and cryptographic stamp. | Verifies all `stub()` calls are eliminated; writes `.harness/verify-stamp.json`. |
 | 17 | **Pattern Matching** | `match(val).with(...).exhaustive()`, `Schema.TaggedUnion` | All packages | Exhaustive branching over closed discriminated unions (`ts-pattern`); replaces `switch` and union `if / else`. | `oxlint` (`syntax-bans`) + `checkEffectGraph` (`discriminant-branching`, `non-exhaustive-union-match`). |
+| 18 | **Event Sourcing** | `decide` / `evolve` / `initialState`, `Schema.TaggedError` | `type:domain` & `type:contract` | Pure synchronous `evolve<Aggregate>`, effectful `Effect.fn("<Aggregate>.decide")`, non-empty batches. | `impure-decider`, `impure-reducer`, `missing-decider-property-test`. |
 
 ## The `stub<A, E, R>(...args)` Skeleton Pattern
 
@@ -96,7 +97,7 @@ When a user provides product or domain specifications in **EARS (Easy Approach t
 |---|---|---|---|
 | **Ubiquitous**<br>`THE SYSTEM SHALL <response>` | Core domain invariant or entity shape | `Schema.Struct` / `Schema.Class` / `Schema.TaggedUnion` in `type:contract` and return channel **`A`** | Schema decode/encode tests & typecheck |
 | **Event-Driven**<br>`WHEN <trigger>, THE SYSTEM SHALL <response>` | Action entry point and happy-path outcome | `HttpApiEndpoint` / `Rpc` payload Schema in `type:contract` $\rightarrow$ `Effect.fn("Domain.useCase")` returning **`A`** | `it.effect("WHEN <trigger>, SHALL <response>")` |
-| **Unwanted Behavior**<br>`IF <condition>, THEN THE SYSTEM SHALL <fail/recover>` | Domain or boundary failure condition | `Schema.TaggedErrorClass` in `type:contract` added to the **`E`** channel (`return yield* new MyError(...)`) | `it.effect("IF <condition>, SHALL fail with <Error>")` + `OpenApi` error status |
+| **Unwanted Behavior**<br>`IF <condition>, THEN THE SYSTEM SHALL <fail/recover>` | Domain or boundary failure condition | `Schema.TaggedError<Self>()("Tag", { ... })` in `type:contract` added to the **`E`** channel (`return yield* new MyError(...)`) | `it.effect("IF <condition>, SHALL fail with <Error>")` + `OpenApi` error status |
 | **State-Driven**<br>`WHILE <in state>, THE SYSTEM SHALL <response>` | State guard, quota, or concurrency invariant | Closed discriminated union (`Schema.TaggedUnion`) + pure decider `Effect.fn("Domain.decide")` using `match(state)...exhaustive()` with **`R = never`** + stateful `Context.Service` in **`R`** | `effect-graph:check` (`impure-decider`, `discriminant-branching`, `non-exhaustive-union-match`) |
 | **Optional Feature**<br>`WHERE <feature enabled>, THE SYSTEM SHALL <response>` | Pluggable capability or feature flag | `Context.Service` + swappable `Layer` or `Config` in the **`R`** channel | Tested by providing alternate `Layer` in `@effect/vitest` |
 
@@ -130,4 +131,50 @@ export const deletePhoto = Effect.fn("Sample.deletePhoto")(function* (id: number
   return yield* stub<void, PhotoNotFoundError, PhotoRepo | AlbumCounterClient>(id)
 })
 ```
+
+---
+
+## Phase-Strict Scope & Doc-to-Code Parity Checklist
+
+Before advancing a plan from skeleton to implementation, verify complete doc-to-code parity and phase hygiene:
+
+- [ ] **No Future-Phase Leakage:** Never copy unimplemented future-phase symbols (e.g., `DeciderInvariantError`, `commandId` idempotency deduplication, partial event matching, or unconfigured `scope:fixture` Nx tags) into the current phase's EARS Spec or ADR. Only plan and declare what is being built in the active phase.
+- [ ] **1:1 Symbol Parity:** Every method name (e.g. `.thenEvents`, `.thenNothing`, `.thenFails`), every `*Error` symbol mentioned in prose or Mermaid diagrams, and every Nx tag in the Spec/ADR must match the current skeleton 1:1. Any symbol in an ADR or Spec that does not exist in code violates `stale-doc-reference`.
+- [ ] **No Empty Source Modules (`empty-source-module` gate):** Never leave placeholder `export {}` files in `src/`. Every source file must contain real domain schemas, service interfaces, or `stub<A, E, R>` signatures.
+- [ ] **Clean Dependency Manifests (`unused-package-dependency` gate):** Never leave unused packages in `package.json` `dependencies`. Note: `@harness/gates` and `@harness/graph` belong in `devDependencies` during planning for `stub()`, and must not remain in runtime `dependencies` once implementation replaces stubs.
+
+---
+
+## Adversarial & Negative Test Matrix
+
+Every plan must include an Adversarial & Negative Test Matrix specifying how boundaries, deciders, and test helpers are tested against invalid states and defects:
+
+### 1. Contract Schemas (`type:contract`)
+- **Positive & Negative Decode Tests:** Every constrained schema (`Schema.Int`, `Schema.Natural`, `PositiveInt`, `NonEmptyString`) must plan both positive decode tests and negative rejection tests asserting failure on `-1`, `1.5`, `""`, missing fields, or null.
+- **Decode-Time Filters vs Compile-Time Branded Types:** Note that `Schema.Int` and `Schema.Natural` are decode-time filters whose TypeScript type is plain `number`. In memory, TypeScript will not prevent passing `-1` or non-integer numbers unless compile-time branding is added. When compile-time branding is needed for in-memory type safety, use `.pipe(Schema.brand("..."))`.
+
+### 2. BDD / Test Runners (`testing.ts` in `type:core`)
+When building domain test harnesses or BDD assertion builders (e.g. `given(...).when(...).thenEvents(...)`):
+- **Strict Structural Equality (`fallback-json-equality` gate):** Compare actual vs expected values strictly using `Equal.equals(actual, expected)` from `effect`. Never fall back to `JSON.stringify(a) === JSON.stringify(b)`, which masks class/prototype differences and non-enumerable properties.
+- **Required Expected Error Parameter (`vacuous-error-assertion` gate):** Require an explicit expected error instance or predicate in `.thenFails(expectedError)`. Never make the error parameter optional (e.g., `.thenFails(expected?: E)`), as calling `.thenFails()` without an argument creates a vacuous assertion that passes on *any* failure.
+- **Runner Negative Meta-Tests (`guard-condition` mutation gate):** The plan must include negative meta-tests that verify the BDD runner itself fails when given incorrect expectations. Use a fake failing decider to assert that the runner produces an `Exit.isFailure` / `Cause.isDie` when:
+  1. Wrong event count is emitted.
+  2. Wrong event payload is emitted.
+  3. Decider succeeds when `.thenFails` was expected.
+  4. Decider throws an unhandled defect (`Die`) when a typed domain error (`Fail`) was expected.
+
+### 3. Decider / Reducer Property-Based Tests
+- **Ban Scalar-Only Property Tests (`shallow-decider-property-test` gate):** Never write property tests that generate only scalar parameters (`[PositiveInt, PositiveInt]`) and fold hardcoded happy-path event sequences.
+- **Arbitrary Stream Generation (`Schema.Array(EventUnionSchema)`):** Always generate arbitrary sequences of events using `Schema.Array(EventUnionSchema)` covering:
+  - Empty event streams (`[]`).
+  - Terminal events (e.g., `CheckedOut`, `Closed`, `Cancelled`).
+  - Post-terminal events (verifying that subsequent events do not mutate or revive terminal state).
+- **Chunked Fold Equivalence Invariant:** Assert that folding an arbitrary event stream in chunks equals folding the stream all at once:
+  ```ts
+  // For any partition index k in [0, events.length]:
+  const fullFold = fold(events)
+  const chunkedFold = fold(events.slice(k), fold(events.slice(0, k)))
+  expect(Equal.equals(chunkedFold, fullFold)).toBe(true)
+  ```
+
 

@@ -33,6 +33,7 @@ Every task follows a strict 7-step gated lifecycle orchestrated by four speciali
 - **REQUIRED SUB-SKILL (Steps 2–3 — Skeleton & Plan-Check):** Use `planning-effect-skeletons`
 - **REQUIRED SUB-SKILL (Steps 4–6 — Subagent Implementation, GC & Verify):** Use `executing-effect-stubs`
 - **OPTIONAL SUB-SKILL (Step 7 — Compound Learning Loop):** Use `compounding-effect-learnings`
+- **OPTIONAL SUB-SKILL (PR & Code Review Resolution):** Use `resolving-effect-review-feedback`
 
 ```text
 plan -> skeleton with stub<A, E, R>(...args) -> harness plan-check -> implement -> harness gc --strict -> harness verify -> harness done -> harness learn
@@ -40,7 +41,7 @@ plan -> skeleton with stub<A, E, R>(...args) -> harness plan-check -> implement 
 
 1. **Plan (`specifying-ears-with-effect`):** Write a plan in Effect idioms (using the `agent-patterns/planning.md` template), mapping requirements (including business/EARS specifications) to Schemas, TaggedErrors, `Context.Service` tags, `Layer` graphs, and `Effect<A, E, R>` signatures:
    - `WHEN <trigger>, THE SYSTEM SHALL <response>` $\rightarrow$ `HttpApiEndpoint` / `Rpc` input Schema + `Effect.fn` success channel `A`
-   - `IF <condition>, THEN THE SYSTEM SHALL <fail>` $\rightarrow$ `Schema.TaggedErrorClass` in `type:contract` + error channel `E`
+   - `IF <condition>, THEN THE SYSTEM SHALL <fail>` $\rightarrow$ `Schema.TaggedError<Self>()("Tag", { ... })` in `type:contract` + error channel `E`
    - `WHILE <state>, THE SYSTEM SHALL <response>` $\rightarrow$ closed `Schema.TaggedUnion` state/decision types + pure decider `Effect.fn("*.decide")` (`R = never`) using exhaustive `match(state)...exhaustive()` from `ts-pattern` + stateful `Context.Service` in `R`
    - `WHERE <feature>, THE SYSTEM SHALL <response>` $\rightarrow$ `Context.Service` + `Layer` / `Config` in `R`
 2. **Skeleton (`planning-effect-skeletons`):** Implement the skeleton first (schemas, errors, service interfaces, function signatures). For function bodies, use `stub<A, E, R>(...args)` from `@harness/gates` to preserve accurate types. The skeleton must pass typecheck before implementation begins.
@@ -49,6 +50,7 @@ plan -> skeleton with stub<A, E, R>(...args) -> harness plan-check -> implement 
 5. **`harness gc --strict` & `harness verify` (`executing-effect-stubs`):** Run graph entropy garbage collection (`node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts gc --strict` via `GraphGc.decide` to catch unused/unprovided `ServiceTag`s, dead `TaggedError`s, and missing pattern docs) followed by verification (`node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts verify`). `harness verify` runs `nx affected -t verify`, enforces zero active `stub()` calls, writes `.harness/verify-stamp.json`, records the graph to Omnigraph branch `impl/current`, and triages failures via `TriageV1`. This is the **ONLY** sanctioned verification gate.
 6. **`harness done` (`executing-effect-stubs`):** Conclude the task (`node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts done`). This validates the freshness of `.harness/verify-stamp.json`, computes graph diffs between `plan/current` and `impl/current` to verify all planned symbols are implemented, checks plan step coverage (`PlanStepCoverageV1`), and merges `impl/current` into `main`.
 7. **`harness learn` (`compounding-effect-learnings`):** Inspect `.harness/friction-log.jsonl` clusters (`Friction.decide` + `LearnProposalV1`) via `node --import ./tools/node-ts-resolver.mjs apps/harness-cli/src/index.ts learn` and promote recurring friction (`route_miss`, `verify_failure`, `guard_escalation`) into `agent-patterns/*.md`, `DETERMINISTIC_TRIAGE_RULES`, `ALLOWLIST`, or AST/graph gates (`--clear` after promotion).
+8. **Review Feedback Resolution (`resolving-effect-review-feedback`):** When addressing code review feedback (pasted from Grok/Codex/human reviewers or fetched from a GitHub PR), adjudicate findings centrally with Graph MCP (`harness_resolve`, `harness_ontology_why`, `harness_structural_search`, `harness_tests_reaching`), synchronize EARS specs/ADRs first, dispatch package-isolated `flash` fixer subagents with `harness_route` recipes, re-verify via `gc --strict`, `mutate --strict`, and `verify`, and promote any gate blind spots via `compounding-effect-learnings`.
 
 ---
 

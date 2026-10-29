@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { Effect, Schema } from "effect"
 import { buildHarnessGraph, loadGraphSnapshot } from "@harness/graph"
 import {
@@ -18,6 +18,7 @@ import {
   decideMutationReport,
   decideSessionHandoff,
   decideSpanBudgets,
+  deriveRepoOmnigraphPort,
   diffPlanAndImplGraphs,
   discoverDomainMutants,
   evaluateMutationOutcomes,
@@ -25,8 +26,12 @@ import {
   lintEarsSpecMarkdown,
   loadGovernanceDocsFromDisk,
   parseGovernanceDocFrontmatter,
+  resolveCanonicalRepoRoot,
   resolveHarnessStateDir,
+  resolveOmnigraphClusterDir,
+  resolveOmnigraphTaskBranches,
   scanGraphEntropy,
+  scanWorkspacePackageHygiene,
   type CodeMutant,
   type FrictionCluster,
   type FrictionEvent,
@@ -1169,6 +1174,120 @@ status: accepted
         resolveHarnessStateDir("/repo", { HARNESS_STATE_DIR: "/tmp/custom-state" })
       ).toBe("/tmp/custom-state")
     })
+
+    it("resolveCanonicalRepoRoot resolves regular directory vs linked worktree directory", () => {
+      const regularDir = mkdtempSync(join(tmpdir(), "harness-reg-repo-"))
+      const wtDir = mkdtempSync(join(tmpdir(), "harness-wt-repo-"))
+      try {
+        expect(resolveCanonicalRepoRoot(regularDir)).toBe(regularDir)
+
+        writeFileSync(join(wtDir, ".git"), "gitdir: /path/to/main/.git/worktrees/wt-1\n")
+        expect(resolveCanonicalRepoRoot(wtDir)).toBe("/path/to/main")
+      } finally {
+        rmSync(regularDir, { recursive: true, force: true })
+        rmSync(wtDir, { recursive: true, force: true })
+      }
+    })
+
+    it("resolveOmnigraphClusterDir always resolves to canonicalRepoRoot/.harness/omnigraph-cluster", () => {
+      const mainRepo = mkdtempSync(join(tmpdir(), "harness-main-repo-"))
+      const wtDir = mkdtempSync(join(tmpdir(), "harness-linked-wt-"))
+      try {
+        writeFileSync(join(wtDir, ".git"), `gitdir: ${join(mainRepo, ".git", "worktrees", "wt-1")}\n`)
+
+        // Without HARNESS_WORKTREE_ID
+        expect(resolveOmnigraphClusterDir(mainRepo, {})).toBe(
+          join(mainRepo, ".harness", "omnigraph-cluster")
+        )
+
+        // With HARNESS_WORKTREE_ID set, still points to canonical repo root cluster
+        expect(
+          resolveOmnigraphClusterDir(mainRepo, { HARNESS_WORKTREE_ID: "wt-feature" })
+        ).toBe(join(mainRepo, ".harness", "omnigraph-cluster"))
+
+        // Inside linked git worktree, points to canonical repo root cluster
+        expect(resolveOmnigraphClusterDir(wtDir, {})).toBe(
+          join(mainRepo, ".harness", "omnigraph-cluster")
+        )
+
+        // With explicit HARNESS_STATE_DIR
+        expect(
+          resolveOmnigraphClusterDir(mainRepo, { HARNESS_STATE_DIR: ".custom-state" })
+        ).toBe(join(mainRepo, ".custom-state", "omnigraph-cluster"))
+      } finally {
+        rmSync(mainRepo, { recursive: true, force: true })
+        rmSync(wtDir, { recursive: true, force: true })
+      }
+    })
+
+    it("deriveRepoOmnigraphPort produces deterministic port in range and isolates repositories", () => {
+      const mainRepo = mkdtempSync(join(tmpdir(), "harness-main-port-"))
+      const wtDir = mkdtempSync(join(tmpdir(), "harness-wt-port-"))
+      try {
+        writeFileSync(join(wtDir, ".git"), `gitdir: ${join(mainRepo, ".git", "worktrees", "wt-1")}\n`)
+
+        const mainPort = deriveRepoOmnigraphPort(mainRepo)
+        const wtPort = deriveRepoOmnigraphPort(wtDir)
+
+        expect(wtPort).toBe(mainPort)
+        expect(mainPort).toBeGreaterThanOrEqual(18080)
+        expect(mainPort).toBeLessThanOrEqual(28079)
+
+        const portAlpha = deriveRepoOmnigraphPort("/tmp/repo-alpha")
+        const portBeta = deriveRepoOmnigraphPort("/tmp/repo-beta")
+        expect(portAlpha).toBeGreaterThanOrEqual(18080)
+        expect(portAlpha).toBeLessThanOrEqual(28079)
+        expect(portBeta).toBeGreaterThanOrEqual(18080)
+        expect(portBeta).toBeLessThanOrEqual(28079)
+        expect(portAlpha).not.toBe(portBeta)
+      } finally {
+        rmSync(mainRepo, { recursive: true, force: true })
+        rmSync(wtDir, { recursive: true, force: true })
+      }
+    })
+
+    it("resolveOmnigraphTaskBranches resolves default vs worktree task branches", () => {
+      const mainRepo = mkdtempSync(join(tmpdir(), "harness-main-branches-"))
+      const wtDir = mkdtempSync(join(tmpdir(), "harness-wt-branches-"))
+      try {
+        writeFileSync(join(wtDir, ".git"), `gitdir: ${join(mainRepo, ".git", "worktrees", "wt-1")}\n`)
+
+        // Default
+        expect(resolveOmnigraphTaskBranches(mainRepo, {})).toEqual({
+          planBranch: "plan/current",
+          implBranch: "impl/current",
+          mainBranch: "main"
+        })
+
+        // With HARNESS_WORKTREE_ID
+        expect(
+          resolveOmnigraphTaskBranches(mainRepo, { HARNESS_WORKTREE_ID: "feature-auth" })
+        ).toEqual({
+          planBranch: "plan/wt-feature-auth",
+          implBranch: "impl/wt-feature-auth",
+          mainBranch: "main"
+        })
+
+        expect(
+          resolveOmnigraphTaskBranches(mainRepo, { HARNESS_WORKTREE_ID: "feat/nested#branch" })
+        ).toEqual({
+          planBranch: "plan/wt-feat_nested_branch",
+          implBranch: "impl/wt-feat_nested_branch",
+          mainBranch: "main"
+        })
+
+        // Inside linked git worktree directory
+        const slug = basename(wtDir).replace(/[^a-zA-Z0-9._-]/g, "_")
+        expect(resolveOmnigraphTaskBranches(wtDir, {})).toEqual({
+          planBranch: `plan/wt-${slug}`,
+          implBranch: `impl/wt-${slug}`,
+          mainBranch: "main"
+        })
+      } finally {
+        rmSync(mainRepo, { recursive: true, force: true })
+        rmSync(wtDir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe("decider property tests & AST mutation testing", () => {
@@ -1928,6 +2047,200 @@ Context description here.
       )
       expect(placeholderMismatch).toBeDefined()
       expect(placeholderMismatch?.message).toContain("empty or placeholder cell")
+    })
+
+    it.effect("flags shallow-decider-property-test when decider property test only has scalar/primitive arbitraries", () =>
+      Effect.gen(function* () {
+        const fnQualname = "libs/sample/domain/src/index.ts#Album.decide"
+        const testId = "libs/sample/domain/test/index.test.ts#test1"
+
+        const graphWithShallowProp = buildHarnessGraph({
+          fns: [
+            {
+              qualname: fnQualname,
+              spanName: "Album.decide",
+              packageTag: "domain",
+              file: "libs/sample/domain/src/index.ts",
+              line: 14,
+              successType: "number",
+              isStub: false
+            }
+          ],
+          tests: [
+            {
+              testId,
+              testFile: "libs/sample/domain/test/index.test.ts",
+              testName: "libs/sample/domain/test/index.test.ts",
+              lastTreeHash: "workspace",
+              isPropertyTest: true,
+              hasNonPrimitiveArbitrary: false
+            } as any
+          ],
+          exercisesSpans: [
+            {
+              testId,
+              calleeQualname: fnQualname,
+              callCount: 1,
+              receiverLayer: null
+            }
+          ]
+        })
+
+        const report = yield* decideGraphEntropy({
+          graph: graphWithShallowProp,
+          checkDeciderPropertyTests: true
+        })
+
+        expect(report.clean).toBe(false)
+        const shallowFinding = report.findings.find(
+          (f) => f.kind === "shallow-decider-property-test"
+        )
+        expect(shallowFinding).toBeDefined()
+        expect(shallowFinding?.nodeId).toBe("Album.decide")
+        expect(shallowFinding?.message).toContain("only exercised by scalar/primitive property tests")
+      })
+    )
+
+    it.effect("flags stale-doc-reference when an accepted spec Mermaid diagram references non-existent TaggedError", () =>
+      Effect.gen(function* () {
+        const graph = buildHarnessGraph({
+          errors: [
+            {
+              errorTag: "KnownDomainError",
+              file: "libs/sample/contract/src/index.ts"
+            }
+          ]
+        })
+
+        const doc: GovernanceDocReference = {
+          id: "sample:SPEC-0004",
+          docPath: "libs/sample/docs/specs/0004.md",
+          status: "accepted",
+          markdown: `---
+id: sample:SPEC-0004
+title: Decider Spec
+status: accepted
+---
+
+# Architecture Diagram
+
+\`\`\`mermaid
+flowchart TD
+  Decider --> DeciderInvariantError
+  Decider --> KnownDomainError
+\`\`\`
+`
+        }
+
+        const report = yield* decideGraphEntropy({
+          graph,
+          governanceDocs: [doc]
+        })
+
+        expect(report.clean).toBe(false)
+        const staleErrorFinding = report.findings.find(
+          (f) =>
+            f.kind === "stale-doc-reference" &&
+            f.nodeId === "sample:SPEC-0004:DeciderInvariantError"
+        )
+        expect(staleErrorFinding).toBeDefined()
+        expect(staleErrorFinding?.message).toContain(
+          'references non-existent TaggedError "DeciderInvariantError" in a Mermaid diagram'
+        )
+
+        const knownFinding = report.findings.find(
+          (f) =>
+            f.kind === "stale-doc-reference" &&
+            f.nodeId.includes("KnownDomainError")
+        )
+        expect(knownFinding).toBeUndefined()
+      })
+    )
+
+    it("detects empty-source-module and unused-package-dependency with scanWorkspacePackageHygiene", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "harness-hygiene-test-"))
+      try {
+        const domainPkgDir = join(tempDir, "libs", "sample", "domain")
+        const srcDir = join(domainPkgDir, "src")
+        mkdirSync(srcDir, { recursive: true })
+
+        writeFileSync(
+          join(domainPkgDir, "package.json"),
+          JSON.stringify(
+            {
+              name: "@sample/domain",
+              dependencies: {
+                "unimported-dependency": "1.0.0",
+                effect: "4.0.0"
+              }
+            },
+            null,
+            2
+          )
+        )
+
+        writeFileSync(
+          join(srcDir, "errors.ts"),
+          `// Empty error placeholder module
+/* Block comment */
+export {};
+`
+        )
+
+        writeFileSync(
+          join(srcDir, "index.ts"),
+          `export const value = 42\n`
+        )
+
+        const findings = scanWorkspacePackageHygiene(tempDir)
+
+        const emptyModuleFinding = findings.find(
+          (f) => f.kind === "empty-source-module" && f.nodeId === "libs/sample/domain/src/errors.ts"
+        )
+        expect(emptyModuleFinding).toBeDefined()
+        expect(emptyModuleFinding?.message).toContain("contains only an empty export ('export {}')")
+
+        const unusedDepFinding = findings.find(
+          (f) =>
+            f.kind === "unused-package-dependency" &&
+            f.nodeId === "@sample/domain:unimported-dependency"
+        )
+        expect(unusedDepFinding).toBeDefined()
+        expect(unusedDepFinding?.message).toContain(
+          'Package "@sample/domain" declares dependency "unimported-dependency" in package.json, but no file in src/ imports it.'
+        )
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("discovers guard-condition mutants for Equal.equals and Exit.isSuccess", () => {
+      const sourceCode = `
+export const checkGuard = (actual: unknown, expected: unknown, exit: Exit.Exit<unknown, unknown>) => {
+  if (!Equal.equals(actual, expected)) {
+    return false
+  }
+  if (Equal.equals(actual, expected)) {
+    return true
+  }
+  if (Exit.isSuccess(exit)) {
+    return true
+  }
+  return false
+}
+`
+      const mutants = discoverDomainMutants("libs/sample/domain/src/check.ts", sourceCode)
+      const guardMutants = mutants.filter((m) => m.category === "guard-condition")
+      expect(guardMutants).toHaveLength(3)
+
+      const notEqualMutant = guardMutants.find((m) => m.original === "if (!Equal.equals(")
+      expect(notEqualMutant?.replacement).toBe("if (false && !Equal.equals(")
+
+      const equalMutant = guardMutants.find((m) => m.original === "if (Equal.equals(")
+      expect(equalMutant?.replacement).toBe("if (true || Equal.equals(")
+
+      const exitMutant = guardMutants.find((m) => m.original === "if (Exit.isSuccess(")
+      expect(exitMutant?.replacement).toBe("if (false && Exit.isSuccess(")
     })
   })
 })

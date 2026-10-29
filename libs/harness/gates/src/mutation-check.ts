@@ -10,6 +10,7 @@ export type MutantCategory =
   | "boolean-return"
   | "batch-folding"
   | "terminal-state-preservation"
+  | "guard-condition"
 
 export interface CodeMutant {
   readonly id: string
@@ -56,7 +57,10 @@ const MUTATION_PATTERNS: ReadonlyArray<{
   { original: "events.reduce(", replacement: "events.slice(0, 1).reduce(", category: "batch-folding" },
   { original: ".reduce(evolve,", replacement: ".slice(0, 1).reduce(evolve,", category: "batch-folding" },
   { original: "() => state", replacement: "() => initialState", category: "terminal-state-preservation" },
-  { original: "return state", replacement: "return initialState", category: "terminal-state-preservation" }
+  { original: "return state", replacement: "return initialState", category: "terminal-state-preservation" },
+  { original: "if (!Equal.equals(", replacement: "if (false && !Equal.equals(", category: "guard-condition" },
+  { original: "if (Equal.equals(", replacement: "if (true || Equal.equals(", category: "guard-condition" },
+  { original: "if (Exit.isSuccess(", replacement: "if (false && Exit.isSuccess(", category: "guard-condition" }
 ]
 
 const shouldSkipLine = (trimmed: string): boolean => {
@@ -151,7 +155,7 @@ export const evaluateMutationOutcomes = (
 
 interface DomainFile {
   readonly scope: string
-  readonly tier: "domain" | "contract"
+  readonly tier: "domain" | "core" | "contract"
   readonly fullPath: string
   readonly relFile: string
 }
@@ -168,59 +172,54 @@ const findDomainFiles = (
   if (cleanScope) {
     cleanScope = cleanScope
       .replace(/^@harness\//, "")
-      .replace(/-(domain|contract)$/, "")
+      .replace(/-(domain|core|contract)$/, "")
   }
 
   const scopes = cleanScope !== undefined ? [cleanScope] : readdirSync(libsDir)
 
   for (const s of scopes) {
-    const domainSrcDir = join(libsDir, s, "domain", "src")
-    if (existsSync(domainSrcDir)) {
-      const walk = (dir: string) => {
-        const entries = readdirSync(dir, { withFileTypes: true })
-        for (const entry of entries) {
-          const full = join(dir, entry.name)
-          if (entry.isDirectory()) {
-            walk(full)
-          } else if (
-            entry.isFile() &&
-            (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) &&
-            !entry.name.endsWith(".d.ts")
-          ) {
-            const relFile = relative(repoRoot, full).replace(/\\/g, "/")
-            results.push({ scope: s, tier: "domain", fullPath: full, relFile })
-          }
-        }
-      }
-      walk(domainSrcDir)
-    }
+    const scopePath = join(libsDir, s)
+    const tiersToScan: ReadonlyArray<{
+      readonly dir: string
+      readonly tier: "domain" | "core" | "contract"
+    }> = [
+      { dir: join(scopePath, "domain", "src"), tier: "domain" as const },
+      { dir: join(scopePath, "core", "src"), tier: "core" as const },
+      { dir: join(scopePath, "contract", "src"), tier: "contract" as const }
+    ]
 
-    const contractSrcDir = join(libsDir, s, "contract", "src")
-    if (existsSync(contractSrcDir)) {
-      const walk = (dir: string) => {
-        const entries = readdirSync(dir, { withFileTypes: true })
-        for (const entry of entries) {
-          const full = join(dir, entry.name)
-          if (entry.isDirectory()) {
-            walk(full)
-          } else if (
-            entry.isFile() &&
-            (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) &&
-            !entry.name.endsWith(".d.ts")
-          ) {
-            const content = readFileSync(full, "utf8")
-            if (
-              content.includes("Effect.fn") ||
-              content.includes("Effect.gen") ||
-              content.includes("match(")
+    for (const { dir, tier } of tiersToScan) {
+      if (existsSync(dir)) {
+        const walk = (d: string) => {
+          const entries = readdirSync(d, { withFileTypes: true })
+          for (const entry of entries) {
+            const full = join(d, entry.name)
+            if (entry.isDirectory()) {
+              walk(full)
+            } else if (
+              entry.isFile() &&
+              (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) &&
+              !entry.name.endsWith(".d.ts")
             ) {
-              const relFile = relative(repoRoot, full).replace(/\\/g, "/")
-              results.push({ scope: s, tier: "contract", fullPath: full, relFile })
+              if (tier === "contract") {
+                const content = readFileSync(full, "utf8")
+                if (
+                  content.includes("Effect.fn") ||
+                  content.includes("Effect.gen") ||
+                  content.includes("match(")
+                ) {
+                  const relFile = relative(repoRoot, full).replace(/\\/g, "/")
+                  results.push({ scope: s, tier, fullPath: full, relFile })
+                }
+              } else {
+                const relFile = relative(repoRoot, full).replace(/\\/g, "/")
+                results.push({ scope: s, tier, fullPath: full, relFile })
+              }
             }
           }
         }
+        walk(dir)
       }
-      walk(contractSrcDir)
     }
   }
 

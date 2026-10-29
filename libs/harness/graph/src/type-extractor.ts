@@ -6,6 +6,7 @@ import {
   type CallExpression,
   type NewExpression,
   Node,
+  type ParameterDeclaration,
   type ParenthesizedTypeNode,
   Project,
   type PropertyAccessExpression,
@@ -71,7 +72,7 @@ export const resolvePackageTag = (repoRoot: string, relFilePath: string): Packag
       const opt = decodePackageJson(content)
       if (Option.isSome(opt) && opt.value.nx?.tags) {
         const tags = opt.value.nx.tags
-        if (tags.includes("type:domain")) return "domain"
+        if (tags.includes("type:domain") || tags.includes("type:core")) return "domain"
         if (tags.includes("type:infra")) return "infra"
         if (tags.includes("type:app")) return "app"
         if (tags.includes("type:contract") && !tags.includes("type:service")) return "contract"
@@ -84,7 +85,7 @@ export const resolvePackageTag = (repoRoot: string, relFilePath: string): Packag
     if (parent === currentDir) break
     currentDir = parent
   }
-  if (relFilePath.includes("/domain/")) return "domain"
+  if (relFilePath.includes("/domain/") || relFilePath.includes("/core/")) return "domain"
   if (relFilePath.includes("/infra/")) return "infra"
   if (relFilePath.includes("/contract/")) return "contract"
   if (relFilePath.includes("/service/")) return "service"
@@ -192,7 +193,7 @@ const isClosedFiniteUnionType = (argType: Type, locationNode: Node): boolean => 
 }
 
 const findEnclosingSymbolName = (node: Node, relPath: string): string => {
-  let curr: Node | undefined = node.getParent()
+  let curr: Node | undefined = node
   while (curr !== undefined) {
     if (Node.isVariableDeclaration(curr)) {
       const name = curr.getName()
@@ -230,9 +231,11 @@ export const extractTypeAwareGraphFromSource = (
     for (const scopeEntry of fs.readdirSync(libsDir, { withFileTypes: true })) {
       if (!scopeEntry.isDirectory() || scopeEntry.name === "harness") continue
       const scopeDir = path.join(libsDir, scopeEntry.name)
-      for (const tier of ["contract", "service", "domain", "infra"]) {
+      for (const tier of ["contract", "service", "domain", "core", "infra"]) {
         const entryFile = path.join(scopeDir, tier, "src", "index.ts")
         dynamicPaths[`@harness/${scopeEntry.name}-${tier}`] = [entryFile]
+        dynamicPaths[`@effect-${scopeEntry.name}/${tier}`] = [entryFile]
+        dynamicPaths[`@${scopeEntry.name}/${tier}`] = [entryFile]
       }
     }
   }
@@ -347,6 +350,8 @@ export const extractTypeAwareGraphFromSource = (
       if (
         extText.includes("Data.TaggedError") ||
         extText.includes("TaggedError(") ||
+        extText.includes("TaggedError<") ||
+        extText.includes("Schema.TaggedError") ||
         extText.includes("Schema.TaggedErrorClass") ||
         extText.includes("TaggedErrorClass(")
       ) {
@@ -355,7 +360,11 @@ export const extractTypeAwareGraphFromSource = (
         const callExprs = extClause.getDescendantsOfKind(SyntaxKind.CallExpression)
         for (const c of callExprs) {
           const args = c.getArguments()
-          if (args.length > 0 && args[0]?.getKind() === SyntaxKind.StringLiteral) {
+          if (
+            args.length > 0 &&
+            (args[0]?.getKind() === SyntaxKind.StringLiteral ||
+              args[0]?.getKind() === SyntaxKind.NoSubstitutionTemplateLiteral)
+          ) {
             errorTag = args[0].getText().replace(/^["'`]|["'`]$/g, "")
             break
           }
@@ -377,7 +386,7 @@ export const extractTypeAwareGraphFromSource = (
               .getProperties()
               .filter(Node.isPropertyAssignment)
               .map((p) => p.getName())
-              .filter((n) => n !== "_tag")
+              .filter((n) => n !== "_tag" && n !== "version")
             taggedSchemasByTag.set(tag, {
               tag,
               properties: props,
@@ -401,7 +410,7 @@ export const extractTypeAwareGraphFromSource = (
             .getProperties()
             .filter(Node.isPropertyAssignment)
             .map((p) => p.getName())
-            .filter((n) => n !== "_tag")
+            .filter((n) => n !== "_tag" && n !== "version")
           taggedSchemasByTag.set(tag, {
             tag,
             properties: props,
@@ -549,6 +558,21 @@ export const extractTypeAwareGraphFromSource = (
         }
       }
 
+      if (
+        !isEffectFn &&
+        (filePkgTag === "domain" || filePkgTag === "contract") &&
+        init &&
+        (Node.isArrowFunction(init) || Node.isFunctionExpression(init)) &&
+        init.getParameters().length === 2 &&
+        /^(?:evolve[A-Z]\w*|reduce[A-Z]\w*|.*Reducer)$/.test(varName)
+      ) {
+        isEffectFn = true
+        spanName =
+          varName.startsWith("evolve") && varName.length > 6
+            ? `${varName.slice(6)}.evolve`
+            : varName
+      }
+
       if (!isEffectFn || !init) continue
 
       const qualname = `${relPath}#${varName}`
@@ -612,6 +636,12 @@ export const extractTypeAwareGraphFromSource = (
         const typeArgs = retType.getTypeArguments()
         if (typeArgs.length >= 1 && typeArgs[0] && successType === "void" && !typeArgs[0].isAny()) {
           successType = typeArgs[0].getText()
+        } else if (successType === "void") {
+          const retNode =
+            Node.isArrowFunction(init) || Node.isFunctionExpression(init)
+              ? init.getReturnTypeNode()?.getText()
+              : undefined
+          successType = retNode ?? (!retType.isAny() ? retType.getText() : "unknown")
         }
         if (
           typeArgs.length >= 2 &&
@@ -725,6 +755,34 @@ export const extractTypeAwareGraphFromSource = (
         referencedServices.add(svc)
       }
     }
+
+    if (filePkgTag === "domain" || filePkgTag === "contract") {
+      for (const fnDecl of sourceFile.getFunctions()) {
+        if (!fnDecl.isExported()) continue
+        const fnName = fnDecl.getName()
+        if (!fnName) continue
+        if (
+          /^(?:evolve[A-Z]\w*|reduce[A-Z]\w*|.*Reducer)$/.test(fnName) &&
+          fnDecl.getParameters().length === 2
+        ) {
+          const qualname = `${relPath}#${fnName}`
+          const spanName =
+            fnName.startsWith("evolve") && fnName.length > 6
+              ? `${fnName.slice(6)}.evolve`
+              : fnName
+          fns.push({
+            _tag: "EffectFn",
+            qualname,
+            spanName,
+            packageTag: filePkgTag,
+            file: relPath,
+            line: fnDecl.getStartLineNumber(),
+            successType: fnDecl.getReturnTypeNode()?.getText() ?? "unknown",
+            isStub: false
+          })
+        }
+      }
+    }
   }
 
   // 2b. Type-aware discriminant branching, array predicate branching, non-exhaustive match check, and schema boolean state check
@@ -766,6 +824,34 @@ export const extractTypeAwareGraphFromSource = (
     }
 
     const checkConditionNode = (condExpr: Node, statementNode: Node): void => {
+      const callNodes = [
+        ...(Node.isCallExpression(condExpr) ? [condExpr] : []),
+        ...condExpr.getDescendantsOfKind(SyntaxKind.CallExpression)
+      ]
+      for (const callNode of callNodes) {
+        const calleeText = callNode.getExpression().getText()
+        if (
+          calleeText === "Exit.isSuccess" ||
+          calleeText === "Exit.isFailure" ||
+          calleeText === "Option.isSome" ||
+          calleeText === "Option.isNone" ||
+          calleeText === "Either.isRight" ||
+          calleeText === "Either.isLeft" ||
+          calleeText === "Result.isSuccess" ||
+          calleeText === "Result.isFailure"
+        ) {
+          const enclosingSymbol = findEnclosingSymbolName(statementNode, relPath)
+          branchingViolations.push({
+            rule: "discriminant-branching",
+            message: `Condition in '${enclosingSymbol}' branches on tag guard '${calleeText}(...)' via if/ternary — enumerate all variants explicitly with match(...).with(...).exhaustive() from ts-pattern.`,
+            file: relPath,
+            line: statementNode.getStartLineNumber(),
+            enclosingSymbol
+          })
+          return
+        }
+      }
+
       const binNodes = [
         ...(Node.isBinaryExpression(condExpr) ? [condExpr] : []),
         ...condExpr.getDescendantsOfKind(SyntaxKind.BinaryExpression)
@@ -834,6 +920,37 @@ export const extractTypeAwareGraphFromSource = (
 
     for (const callExpr of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
       const callee = callExpr.getExpression()
+      const calleeText = callee.getText()
+
+      // unscoped-effect-run check
+      if (
+        calleeText === "Effect.runSync" ||
+        calleeText === "Effect.runPromise" ||
+        calleeText === "Effect.runFork" ||
+        calleeText === "Runtime.runSync" ||
+        calleeText === "Runtime.runPromise"
+      ) {
+        const isInsideDeciderMake = callExpr.getAncestors().some(
+          (a) =>
+            Node.isCallExpression(a) &&
+            /^(?:.*\.)?Decider\.make$/.test(a.getExpression().getText())
+        )
+        const enclosingSymbol = findEnclosingSymbolName(callExpr, relPath)
+        const isDomainOrContract =
+          (filePkgTag === "domain" || filePkgTag === "contract") &&
+          !relPath.endsWith("/testing.ts")
+        const isReducerSymbol = /#(evolve\w*|reduce\w*|.*Reducer)$/i.test(enclosingSymbol)
+
+        if (isDomainOrContract || isInsideDeciderMake || isReducerSymbol) {
+          branchingViolations.push({
+            rule: "unscoped-effect-run",
+            message: `Call to '${calleeText}' in '${enclosingSymbol}' executes an Effect synchronously/imperatively inside domain/reducer logic — keep reducers pure '(state, event) => State' and yield Effects instead of calling Effect.run*.`,
+            file: relPath,
+            line: callExpr.getStartLineNumber(),
+            enclosingSymbol
+          })
+        }
+      }
 
       // Array predicate callbacks: .filter(...), .find(...), .some(...), .every(...)
       if (Node.isPropertyAccessExpression(callee)) {
@@ -936,6 +1053,81 @@ export const extractTypeAwareGraphFromSource = (
               })
             }
           }
+        }
+      }
+    }
+
+    // fallback-json-equality check
+    for (const bin of sourceFile.getDescendantsOfKind(SyntaxKind.BinaryExpression)) {
+      const opKind = bin.getOperatorToken().getKind()
+      const isCaseA =
+        (opKind === SyntaxKind.EqualsEqualsEqualsToken ||
+          opKind === SyntaxKind.ExclamationEqualsEqualsToken ||
+          opKind === SyntaxKind.EqualsEqualsToken ||
+          opKind === SyntaxKind.ExclamationEqualsToken) &&
+        bin.getLeft().getText().trim().startsWith("JSON.stringify(") &&
+        bin.getRight().getText().trim().startsWith("JSON.stringify(")
+      const isCaseB =
+        (opKind === SyntaxKind.BarBarToken || opKind === SyntaxKind.AmpersandAmpersandToken) &&
+        bin.getLeft().getText().includes("Equal.equals(") &&
+        bin.getRight().getText().includes("JSON.stringify(")
+
+      if (isCaseA || isCaseB) {
+        const enclosingSymbol = findEnclosingSymbolName(bin, relPath)
+        branchingViolations.push({
+          rule: "fallback-json-equality",
+          message: `Comparison in '${enclosingSymbol}' uses JSON.stringify equality fallback — compare Effect Data/Schema values exclusively with Equal.equals(a, b).`,
+          file: relPath,
+          line: bin.getStartLineNumber(),
+          enclosingSymbol
+        })
+      }
+    }
+
+    // vacuous-error-assertion check
+    const ASSERTION_NAME_REGEX = /^(?:thenFails|assertFails|expectError)$/
+    const assertionCandidates = [
+      ...sourceFile.getDescendantsOfKind(SyntaxKind.MethodSignature),
+      ...sourceFile.getDescendantsOfKind(SyntaxKind.MethodDeclaration),
+      ...sourceFile.getDescendantsOfKind(SyntaxKind.FunctionDeclaration),
+      ...sourceFile.getDescendantsOfKind(SyntaxKind.VariableDeclaration),
+      ...sourceFile.getDescendantsOfKind(SyntaxKind.PropertyAssignment)
+    ]
+    for (const node of assertionCandidates) {
+      const name = node.getName()
+      if (!name || !ASSERTION_NAME_REGEX.test(name)) continue
+
+      let params: ReadonlyArray<ParameterDeclaration> | undefined
+      if (
+        Node.isMethodSignature(node) ||
+        Node.isMethodDeclaration(node) ||
+        Node.isFunctionDeclaration(node)
+      ) {
+        params = node.getParameters()
+      } else if (Node.isVariableDeclaration(node) || Node.isPropertyAssignment(node)) {
+        const init = node.getInitializer()
+        if (init && (Node.isArrowFunction(init) || Node.isFunctionExpression(init))) {
+          params = init.getParameters()
+        }
+      }
+
+      if (params !== undefined) {
+        const isVacuous =
+          params.length === 0 ||
+          (params[0] !== undefined &&
+            (params[0].hasQuestionToken() ||
+              params[0].hasInitializer() ||
+              /\bundefined\b/.test(params[0].getTypeNode()?.getText() ?? "")))
+
+        if (isVacuous) {
+          const enclosingSymbol = findEnclosingSymbolName(node, relPath)
+          branchingViolations.push({
+            rule: "vacuous-error-assertion",
+            message: `Assertion helper '${name}' in '${enclosingSymbol}' allows an optional or omitted expected error — require an explicit expected error instance or predicate so arbitrary failures are never silently swallowed.`,
+            file: relPath,
+            line: node.getStartLineNumber(),
+            enclosingSymbol
+          })
         }
       }
     }
@@ -1219,6 +1411,7 @@ export const extractTypeAwareGraphFromSource = (
 
           const usedProps = usedPropsPerTag.get(tag) ?? new Set()
           for (const prop of schema.properties) {
+            if (prop === "_tag" || prop === "version") continue
             if (!usedProps.has(prop)) {
               branchingViolations.push({
                 rule: "dead-event-payload",
@@ -1577,6 +1770,34 @@ export const stripCommentsAndTestTitles = (code: string): string => {
   return stripped
 }
 
+const splitTopLevelCommas = (input: string): Array<string> => {
+  const items: Array<string> = []
+  let depth = 0
+  let current = ""
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i]
+    if (char === "(" || char === "[" || char === "{") {
+      depth++
+      current += char
+    } else if (char === ")" || char === "]" || char === "}") {
+      if (depth > 0) depth--
+      current += char
+    } else if (char === "," && depth === 0) {
+      items.push(current)
+      current = ""
+    } else {
+      current += char
+    }
+  }
+  if (current.length > 0) {
+    items.push(current)
+  }
+  return items
+}
+
+const PRIMITIVE_SCALAR_REGEX =
+  /^(?:(?:Schema|S)\.(?:String|Number|Boolean|Int|Natural|Positive|Negative|NonNegative|NonPositive|NonEmptyString)(?:\.[A-Za-z0-9_($. )]+)*|PositiveInt|NonEmptyString|fc\.(?:integer|nat|string|boolean|float|double)\s*\([^)]*\))$/
+
 export const extractWorkspaceTypeAwareGraph = (
   repoRoot: string
 ): Effect.Effect<HarnessGraph> =>
@@ -1620,6 +1841,33 @@ export const extractWorkspaceTypeAwareGraph = (
     const governanceDocs = loadWorkspaceGovernanceDocs(root)
     const updatedNodeIndexByKey = new Map<string, Graph.NodeIndex>(baseGraph.nodeIndexByKey)
 
+    const deciderAliasesByFnName = new Map<string, Set<string>>()
+    const deciderRegex = /(?:export\s+)?const\s+([A-Za-z0-9_$]+)\s*=\s*Decider\.make\s*(?:<[\s\S]*?>)?\s*\(\s*\{([\s\S]*?)\}\s*\)/g
+    for (const input of inputs) {
+      const deciderMatches = input.content.matchAll(deciderRegex)
+      for (const m of deciderMatches) {
+        const deciderVarName = m[1]
+        const body = m[2]
+        if (!deciderVarName || !body) continue
+
+        const decideMatch = body.match(/decide\s*:\s*([A-Za-z0-9_$]+)/)
+        const decideFn = decideMatch ? decideMatch[1] : (/\bdecide\b/.test(body) ? "decide" : null)
+
+        const evolveMatch = body.match(/evolve\s*:\s*([A-Za-z0-9_$]+)/)
+        const evolveFn = evolveMatch ? evolveMatch[1] : (/\bevolve\b/.test(body) ? "evolve" : null)
+
+        for (const fn of [decideFn, evolveFn]) {
+          if (!fn) continue
+          let set = deciderAliasesByFnName.get(fn)
+          if (!set) {
+            set = new Set<string>()
+            deciderAliasesByFnName.set(fn, set)
+          }
+          set.add(deciderVarName)
+        }
+      }
+    }
+
     const augmentedGraph = Graph.mutate<HarnessNode, HarnessEdge>(
       baseGraph.graph,
       (mutable) => {
@@ -1641,18 +1889,41 @@ export const extractWorkspaceTypeAwareGraph = (
             /\b(?:it|test)(?:\.effect)?\.prop\s*\(/.test(content) ||
             /\bfc\.assert\s*\(/.test(content)
 
+          const strippedContent = stripCommentsAndTestTitles(content)
+
+          let hasNonPrimitiveArbitrary: boolean | undefined = undefined
+          if (hasPropTest) {
+            const propCallRegex =
+              /\b(?:it|test)(?:\.effect)?\.prop\s*\(\s*(?:""|''|``)\s*,\s*\[([\s\S]*?)\]/g
+            const matches = [...strippedContent.matchAll(propCallRegex)]
+            if (matches.length > 0) {
+              const allCallsOnlyPrimitive = matches.every((m) => {
+                const interior = m[1] ?? ""
+                const rawItems = splitTopLevelCommas(interior)
+                const items = rawItems.map((s) => s.trim()).filter((s) => s.length > 0)
+                if (items.length === 0) {
+                  return true
+                }
+                return items.every((item) => PRIMITIVE_SCALAR_REGEX.test(item))
+              })
+              hasNonPrimitiveArbitrary = !allCallsOnlyPrimitive
+            } else {
+              hasNonPrimitiveArbitrary = true
+            }
+          }
+
           const testNode: VitestCaseNode = {
             _tag: "VitestCase",
             testId: `${relTestFile}::suite`,
             testFile: relTestFile,
             testName: relTestFile,
             lastTreeHash: "workspace",
-            isPropertyTest: hasPropTest
+            isPropertyTest: hasPropTest,
+            ...(hasNonPrimitiveArbitrary !== undefined ? { hasNonPrimitiveArbitrary } : {})
           }
           const testIdx = Graph.addNode(mutable, testNode)
           updatedNodeIndexByKey.set(testNode.testId, testIdx)
 
-          const strippedContent = stripCommentsAndTestTitles(content)
           const usesTestTracer = strippedContent.includes("runWithTestTracer")
 
           for (const fnNode of effectFns) {
@@ -1676,10 +1947,23 @@ export const extractWorkspaceTypeAwareGraph = (
               ((fnName.length > 0 && strippedContent.includes(fnName)) ||
                 (fnNode.spanName.length > 0 && strippedContent.includes(fnNode.spanName)))
 
+            const deciderAliases = deciderAliasesByFnName.get(fnName)
+            let deciderAliasMatches = false
+            if (deciderAliases) {
+              for (const alias of deciderAliases) {
+                const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+                if (new RegExp(`\\b${escapedAlias}\\b`).test(strippedContent)) {
+                  deciderAliasMatches = true
+                  break
+                }
+              }
+            }
+
             const matches =
               (fnRegex !== null && fnRegex.test(strippedContent)) ||
               (spanCallRegex !== null && spanCallRegex.test(strippedContent)) ||
-              testTracerMatches
+              testTracerMatches ||
+              deciderAliasMatches
 
             if (matches) {
               const calleeIdx = updatedNodeIndexByKey.get(fnNode.qualname)

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 
@@ -348,11 +348,13 @@ describe("Antigravity adapter & plugin configuration", () => {
     expect(allowStdout.trim()).toBe("")
   })
 
-  it("ships specifying-ears-with-effect, planning-effect-skeletons, and executing-effect-stubs in both adapters", () => {
+  it("ships specifying-ears-with-effect, planning-effect-skeletons, executing-effect-stubs, compounding-effect-learnings, and resolving-effect-review-feedback in both adapters", () => {
     const workflowSkills = [
       "specifying-ears-with-effect",
       "planning-effect-skeletons",
-      "executing-effect-stubs"
+      "executing-effect-stubs",
+      "compounding-effect-learnings",
+      "resolving-effect-review-feedback"
     ]
     for (const skillName of workflowSkills) {
       const agySkill = readFileSync(
@@ -370,7 +372,55 @@ describe("Antigravity adapter & plugin configuration", () => {
         expect(content).toContain("## Red Flags")
       }
     }
+
+    for (const base of [
+      resolve(pluginDir, "skills/resolving-effect-review-feedback"),
+      resolve(repoRoot, "adapters/claude-code/skills/resolving-effect-review-feedback")
+    ]) {
+      expect(existsSync(resolve(base, "references/evaluation-rubric.md"))).toBe(true)
+      expect(existsSync(resolve(base, "references/effect-fixer-prompt.md"))).toBe(true)
+    }
+  })
+
+  it("documents all 6 workflow skills and all 4 specialist reviewer subagents in README.md and adapter READMEs", () => {
+    const docPaths = [
+      resolve(repoRoot, "README.md"),
+      resolve(pluginDir, "README.md"),
+      resolve(repoRoot, "adapters/claude-code/README.md")
+    ]
+    const workflowSkills = [
+      "effect-harness",
+      "specifying-ears-with-effect",
+      "planning-effect-skeletons",
+      "executing-effect-stubs",
+      "resolving-effect-review-feedback",
+      "compounding-effect-learnings"
+    ]
+    const specialistSubagents = [
+      "effect-ears-test-reviewer",
+      "effect-security-reviewer",
+      "effect-reliability-reviewer",
+      "effect-adversarial-reviewer"
+    ]
+
+    for (const docPath of docPaths) {
+      expect(existsSync(docPath), `Document file must exist: ${docPath}`).toBe(true)
+      const content = readFileSync(docPath, "utf8")
+      for (const skill of workflowSkills) {
+        expect(
+          content,
+          `Expected ${docPath} to document workflow skill ${skill}`
+        ).toContain(skill)
+      }
+      for (const agent of specialistSubagents) {
+        expect(
+          content,
+          `Expected ${docPath} to document specialist reviewer subagent ${agent}`
+        ).toContain(agent)
+      }
+    }
   })
 })
+
 
 
