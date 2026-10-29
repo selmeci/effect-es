@@ -1,5 +1,6 @@
 packages:
   - apps/*
+  - libs/es/*
   - libs/harness/*
   - libs/sample/*
 onlyBuiltDependencies:
